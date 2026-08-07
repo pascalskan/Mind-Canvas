@@ -216,6 +216,23 @@ function ContentPills({ items, bubbleSize, color }: { items: string[]; bubbleSiz
   );
 }
 
+// ─── Float parameters ─────────────────────────────────────────────────────────
+// Stable per-bubble oscillation params derived once from the initial list.
+// Golden-angle phase stepping ensures no two bubbles drift in sync.
+
+const FLOAT_PARAMS = INITIAL_BUBBLES.map((b, i) => {
+  const g = i * 2.399; // golden angle ≈ 137.5°
+  return {
+    id:     b.id,
+    freqX:  0.12 + (i % 5) * 0.024,   // ~0.12–0.21 Hz
+    freqY:  0.09 + (i % 7) * 0.019,   // ~0.09–0.20 Hz
+    ampX:   b.type === 'root' ? 6 : 11,
+    ampY:   b.type === 'root' ? 5 : 9,
+    phaseX: g,
+    phaseY: g * 1.618,                 // golden ratio phase separation
+  };
+});
+
 // ─── Drag origin type ─────────────────────────────────────────────────────────
 
 interface DragOrigin {
@@ -234,6 +251,7 @@ export default function MindCanvas() {
   const [bubbles, setBubbles] = useState<BubbleData[]>(INITIAL_BUBBLES);
   const [focusedRoot, setFocusedRoot] = useState<string | null>(null);
   const [selectedChild, setSelectedChild] = useState<string | null>(null);
+  const [floatOffsets, setFloatOffsets] = useState<Record<string, { ox: number; oy: number }>>({});
 
   const containerRef = useRef<HTMLDivElement>(null);
   const cameraX     = useMotionValue(typeof window !== 'undefined' ? window.innerWidth  / 2 : 640);
@@ -244,6 +262,35 @@ export default function MindCanvas() {
     cameraX.set(window.innerWidth  / 2);
     cameraY.set(window.innerHeight / 2);
   }, [cameraX, cameraY]);
+
+  // ── Floating animation ───────────────────────────────────────────────────
+  // Each bubble oscillates independently using its own freq/phase/amplitude.
+  // Throttled to ~30 fps — gentle drift doesn't need 60 fps.
+
+  useEffect(() => {
+    const t0 = performance.now();
+    let lastFrame = 0;
+    let rafId: number;
+
+    const tick = (now: number) => {
+      rafId = requestAnimationFrame(tick);
+      if (now - lastFrame < 33) return; // ~30 fps
+      lastFrame = now;
+
+      const t = (now - t0) / 1000;
+      const offsets: Record<string, { ox: number; oy: number }> = {};
+      for (const p of FLOAT_PARAMS) {
+        offsets[p.id] = {
+          ox: Math.sin(t * p.freqX + p.phaseX) * p.ampX,
+          oy: Math.cos(t * p.freqY + p.phaseY) * p.ampY,
+        };
+      }
+      setFloatOffsets(offsets);
+    };
+
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, []);
 
   // ── Focus root ───────────────────────────────────────────────────────────
 
@@ -262,9 +309,10 @@ export default function MindCanvas() {
       const s  = cameraScale.get();
       const cx = (window.innerWidth  / 2 - cameraX.get()) / s;
       const cy = (window.innerHeight / 2 - cameraY.get()) / s;
-      animate(cameraX, window.innerWidth  / 2 - cx, { type: 'spring', stiffness: 45, damping: 15 });
-      animate(cameraY, window.innerHeight / 2 - cy, { type: 'spring', stiffness: 45, damping: 15 });
-      animate(cameraScale, 1, { type: 'spring', stiffness: 45, damping: 15 });
+      const exitAnim = { type: 'tween', duration: 0.22, ease: 'easeOut' } as const;
+      animate(cameraX, window.innerWidth  / 2 - cx, exitAnim);
+      animate(cameraY, window.innerHeight / 2 - cy, exitAnim);
+      animate(cameraScale, 1, exitAnim);
     }
   }, [bubbles, cameraX, cameraY, cameraScale]);
 
@@ -286,12 +334,13 @@ export default function MindCanvas() {
   const lastPan   = useRef({ x: 0, y: 0 });
 
   const onContainerDown = (e: React.PointerEvent) => {
-    if (e.target !== containerRef.current) return;
+    // Bubble pointer-down handlers call stopPropagation, so this only fires
+    // when the user clicks the background — safe to remove the target check.
     isPanning.current = true;
     lastPan.current = { x: e.clientX, y: e.clientY };
     e.currentTarget.setPointerCapture(e.pointerId);
-    if (selectedChild) setSelectedChild(null);
-    else if (focusedRoot) focusRoot(null);
+    if (selectedChild) { setSelectedChild(null); return; }
+    if (focusedRoot) { focusRoot(null); return; }
   };
   const onContainerMove = (e: React.PointerEvent) => {
     if (!isPanning.current) return;
@@ -445,6 +494,8 @@ export default function MindCanvas() {
           const isRoot = bubble.type === 'root';
           const isSelected = bubble.id === selectedChild;
 
+          const { ox = 0, oy = 0 } = floatOffsets[bubble.id] ?? {};
+
           // ── Visibility logic ───────────────────────────────────────────
           let muted = false;
           if (focusedRoot) {
@@ -470,8 +521,8 @@ export default function MindCanvas() {
               key={bubble.id}
               className={`absolute top-0 left-0 rounded-full ${muted ? 'pointer-events-none' : 'cursor-grab active:cursor-grabbing'}`}
               style={{
-                x: bubble.x - size / 2,
-                y: bubble.y - size / 2,
+                x: bubble.x + ox - size / 2,
+                y: bubble.y + oy - size / 2,
                 width: size,
                 height: size,
                 touchAction: 'none',
