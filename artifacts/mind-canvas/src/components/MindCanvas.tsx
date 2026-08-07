@@ -13,253 +13,171 @@ interface BubbleData {
   x: number;
   y: number;
   color: string;
-  /** Content items living inside this bubble — their count drives its size */
   content: string[];
 }
 
-// ─── Content data ─────────────────────────────────────────────────────────────
-// Each child bubble's size is derived from how many content items it holds.
-// Root bubble size is derived from the total content weight of its children.
+// ─── Data ─────────────────────────────────────────────────────────────────────
 
 const INITIAL_BUBBLES: BubbleData[] = [
-  // ── Root bubbles ──────────────────────────────────────────────────────────
-  {
-    id: 'career',
-    type: 'root',
-    label: 'Career',
-    x: -310, y: -160,
-    color: 'hsl(250, 60%, 65%)',
-    content: [], // root size driven by children
-  },
-  {
-    id: 'personal',
-    type: 'root',
-    label: 'Personal',
-    x: 220, y: 110,
-    color: 'hsl(340, 60%, 65%)',
-    content: [],
-  },
-  {
-    id: 'sss',
-    type: 'root',
-    label: 'SSS',
-    x: -90, y: 320,
-    color: 'hsl(170, 40%, 55%)',
-    content: [],
-  },
+  // Root bubbles — size derived from total child content weight
+  { id: 'career',   type: 'root', label: 'Career',   x: -310, y: -160, color: 'hsl(250, 60%, 65%)', content: [] },
+  { id: 'personal', type: 'root', label: 'Personal', x:  220, y:  110, color: 'hsl(340, 60%, 65%)', content: [] },
+  { id: 'sss',      type: 'root', label: 'SSS',      x:  -90, y:  320, color: 'hsl(170, 40%, 55%)', content: [] },
 
-  // ── Career children ───────────────────────────────────────────────────────
-  {
-    id: 'c-visionary',
-    type: 'child',
-    parentId: 'career',
-    label: 'Visionary',
-    x: -450, y: -250,
-    color: 'hsl(250, 60%, 65%)',
-    // 3 items → smaller bubble
-    content: ['10-year vision', 'Industry shifts', 'Long game'],
-  },
-  {
-    id: 'c-newproject',
-    type: 'child',
-    parentId: 'career',
-    label: 'New Project',
-    x: -185, y: -260,
-    color: 'hsl(250, 60%, 65%)',
-    // 5 items → medium bubble
-    content: ['Kickoff brief', 'Timeline draft', 'Stakeholders', 'MVP scope', 'Dependencies'],
-  },
-  {
-    id: 'c-learning',
-    type: 'child',
-    parentId: 'career',
-    label: 'Learning',
-    x: -400, y: -10,
-    color: 'hsl(250, 60%, 65%)',
-    // 3 items → smaller bubble
-    content: ['TypeScript', 'System design', 'Writing clearly'],
-  },
+  // Career children
+  { id: 'c-visionary',  type: 'child', parentId: 'career', label: 'Visionary',   x: -455, y: -250, color: 'hsl(250, 60%, 65%)', content: ['10-year vision', 'Industry shifts', 'Long game'] },
+  { id: 'c-newproject', type: 'child', parentId: 'career', label: 'New Project', x: -190, y: -265, color: 'hsl(250, 60%, 65%)', content: ['Kickoff brief', 'Timeline draft', 'Stakeholders', 'MVP scope', 'Dependencies'] },
+  { id: 'c-learning',   type: 'child', parentId: 'career', label: 'Learning',    x: -405, y:   -5, color: 'hsl(250, 60%, 65%)', content: ['TypeScript', 'System design', 'Writing clearly'] },
 
-  // ── Personal children ─────────────────────────────────────────────────────
-  {
-    id: 'p-fitness',
-    type: 'child',
-    parentId: 'personal',
-    label: 'Fitness',
-    x: 380, y: 30,
-    color: 'hsl(340, 60%, 65%)',
-    // 4 items → medium bubble
-    content: ['Morning runs', 'Zone 2 cardio', 'Mobility', 'Sleep quality'],
-  },
-  {
-    id: 'p-reading',
-    type: 'child',
-    parentId: 'personal',
-    label: 'Reading',
-    x: 80, y: 0,
-    color: 'hsl(340, 60%, 65%)',
-    // 4 items → medium bubble
-    content: ['Deep Work', 'Prince of Persia', 'Newsletter backlog', 'Atomic Habits'],
-  },
-  {
-    id: 'p-family',
-    type: 'child',
-    parentId: 'personal',
-    label: 'Family',
-    x: 290, y: 245,
-    color: 'hsl(340, 60%, 65%)',
-    // 3 items → smaller bubble
-    content: ['Sunday dinners', 'Trip planning', "Dad's birthday"],
-  },
+  // Personal children
+  { id: 'p-fitness', type: 'child', parentId: 'personal', label: 'Fitness', x:  385, y:   30, color: 'hsl(340, 60%, 65%)', content: ['Morning runs', 'Zone 2 cardio', 'Mobility', 'Sleep quality'] },
+  { id: 'p-reading', type: 'child', parentId: 'personal', label: 'Reading', x:   80, y:    0, color: 'hsl(340, 60%, 65%)', content: ['Deep Work', 'Prince of Persia', 'Newsletter backlog', 'Atomic Habits'] },
+  { id: 'p-family',  type: 'child', parentId: 'personal', label: 'Family',  x:  290, y:  248, color: 'hsl(340, 60%, 65%)', content: ['Sunday dinners', 'Trip planning', "Dad's birthday"] },
 
-  // ── SSS children ──────────────────────────────────────────────────────────
-  {
-    id: 's-event',
-    type: 'child',
-    parentId: 'sss',
-    label: 'Event',
-    x: -255, y: 270,
-    color: 'hsl(170, 40%, 55%)',
-    // 6 items → large bubble
-    content: ['Venue confirmed', 'Speakers', 'Catering', 'AV setup', 'Guest list', 'Comms plan'],
-  },
-  {
-    id: 's-planning',
-    type: 'child',
-    parentId: 'sss',
-    label: 'Planning',
-    x: 50, y: 255,
-    color: 'hsl(170, 40%, 55%)',
-    // 3 items → smaller bubble
-    content: ['Q3 roadmap', 'Budget review', 'Team structure'],
-  },
-  {
-    id: 's-marketing',
-    type: 'child',
-    parentId: 'sss',
-    label: 'Marketing',
-    x: -65, y: 460,
-    color: 'hsl(170, 40%, 55%)',
-    // 6 items → large bubble (most active — densest mental load)
-    content: ['Brand refresh', 'Social strategy', 'Email cadence', 'Partnerships', 'Content calendar', 'Analytics'],
-  },
+  // SSS children
+  { id: 's-event',     type: 'child', parentId: 'sss', label: 'Event',     x: -255, y: 270, color: 'hsl(170, 40%, 55%)', content: ['Venue confirmed', 'Speakers', 'Catering', 'AV setup', 'Guest list', 'Comms plan'] },
+  { id: 's-planning',  type: 'child', parentId: 'sss', label: 'Planning',  x:   55, y: 258, color: 'hsl(170, 40%, 55%)', content: ['Q3 roadmap', 'Budget review', 'Team structure'] },
+  { id: 's-marketing', type: 'child', parentId: 'sss', label: 'Marketing', x:  -65, y: 465, color: 'hsl(170, 40%, 55%)', content: ['Brand refresh', 'Social strategy', 'Email cadence', 'Partnerships', 'Content calendar', 'Analytics'] },
 ];
 
 // ─── Size helpers ─────────────────────────────────────────────────────────────
 
 const BASE_CHILD = 72;
-const CONTENT_STEP = 16; // px per content item
+const CONTENT_STEP = 16;
 const MAX_CHILD = 190;
-
 const BASE_ROOT = 128;
-const CHILD_WEIGHT_STEP = 2.5; // px per total content item across children
+const CHILD_WEIGHT_STEP = 2.5;
 
 function getChildSize(bubble: BubbleData): number {
   return Math.min(BASE_CHILD + bubble.content.length * CONTENT_STEP, MAX_CHILD);
 }
-
-function getRootSize(rootId: string, allBubbles: BubbleData[]): number {
-  const totalContent = allBubbles
-    .filter(b => b.parentId === rootId)
-    .reduce((sum, b) => sum + b.content.length, 0);
-  return Math.min(BASE_ROOT + totalContent * CHILD_WEIGHT_STEP, 210);
+function getRootSize(rootId: string, all: BubbleData[]): number {
+  const w = all.filter(b => b.parentId === rootId).reduce((s, b) => s + b.content.length, 0);
+  return Math.min(BASE_ROOT + w * CHILD_WEIGHT_STEP, 210);
+}
+function getBubbleSize(b: BubbleData, all: BubbleData[]): number {
+  return b.type === 'root' ? getRootSize(b.id, all) : getChildSize(b);
 }
 
-function getBubbleSize(bubble: BubbleData, allBubbles: BubbleData[]): number {
-  return bubble.type === 'root'
-    ? getRootSize(bubble.id, allBubbles)
-    : getChildSize(bubble);
-}
+// ─── Glass Bubble ─────────────────────────────────────────────────────────────
 
-// ─── Glass Bubble SVG ─────────────────────────────────────────────────────────
-
-function GlassBubbleSVG({
-  size,
-  color,
-  label,
-}: {
-  size: number;
-  color: string;
-  label: string;
-}) {
+function GlassBubbleSVG({ size, color, label }: { size: number; color: string; label: string }) {
   const uid = (color + size + label).replace(/[^a-zA-Z0-9]/g, '');
-
   return (
-    <div
-      style={{ width: size, height: size }}
-      className="relative rounded-full flex items-center justify-center"
-    >
-      <svg
-        width={size}
-        height={size}
-        viewBox={`0 0 ${size} ${size}`}
-        className="absolute inset-0 pointer-events-none overflow-visible"
-      >
+    <div style={{ width: size, height: size }} className="relative rounded-full flex items-center justify-center">
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="absolute inset-0 pointer-events-none overflow-visible">
         <defs>
           <radialGradient id={`bg-${uid}`} cx="30%" cy="30%" r="70%">
-            <stop offset="0%" stopColor={color} stopOpacity="0.08" />
-            <stop offset="70%" stopColor={color} stopOpacity="0.15" />
+            <stop offset="0%"   stopColor={color} stopOpacity="0.08" />
+            <stop offset="70%"  stopColor={color} stopOpacity="0.15" />
             <stop offset="100%" stopColor={color} stopOpacity="0.4" />
           </radialGradient>
-
           <radialGradient id={`rim-${uid}`} cx="50%" cy="50%" r="50%">
-            <stop offset="85%" stopColor="#ffffff" stopOpacity="0" />
-            <stop offset="97%" stopColor="#ffffff" stopOpacity="0.9" />
-            <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
+            <stop offset="85%"  stopColor="#fff" stopOpacity="0" />
+            <stop offset="97%"  stopColor="#fff" stopOpacity="0.9" />
+            <stop offset="100%" stopColor="#fff" stopOpacity="0" />
           </radialGradient>
-
-          <radialGradient id={`specular-${uid}`} cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#ffffff" stopOpacity="0.95" />
-            <stop offset="25%" stopColor="#ffffff" stopOpacity="0.3" />
-            <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
+          <radialGradient id={`spec-${uid}`} cx="50%" cy="50%" r="50%">
+            <stop offset="0%"   stopColor="#fff" stopOpacity="0.95" />
+            <stop offset="25%"  stopColor="#fff" stopOpacity="0.3" />
+            <stop offset="100%" stopColor="#fff" stopOpacity="0" />
           </radialGradient>
-
           <radialGradient id={`glow-${uid}`} cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor={color} stopOpacity="0.55" />
+            <stop offset="0%"   stopColor={color} stopOpacity="0.55" />
             <stop offset="100%" stopColor={color} stopOpacity="0" />
           </radialGradient>
         </defs>
-
-        <circle cx={size / 2} cy={size / 2} r={size / 2 - 1} fill={`url(#bg-${uid})`} />
-        <circle cx={size / 2} cy={size / 2} r={size / 2 - 1} fill={`url(#rim-${uid})`} />
-        <circle cx={size * 0.65} cy={size * 0.7} r={size * 0.4} fill={`url(#glow-${uid})`} />
-        <ellipse
-          cx={size * 0.28}
-          cy={size * 0.25}
-          rx={size * 0.18}
-          ry={size * 0.1}
-          fill={`url(#specular-${uid})`}
-          transform={`rotate(-40, ${size * 0.28}, ${size * 0.25})`}
-        />
+        <circle cx={size/2} cy={size/2} r={size/2-1} fill={`url(#bg-${uid})`} />
+        <circle cx={size/2} cy={size/2} r={size/2-1} fill={`url(#rim-${uid})`} />
+        <circle cx={size*.65} cy={size*.7} r={size*.4} fill={`url(#glow-${uid})`} />
+        <ellipse cx={size*.28} cy={size*.25} rx={size*.18} ry={size*.1}
+          fill={`url(#spec-${uid})`}
+          transform={`rotate(-40,${size*.28},${size*.25})`} />
       </svg>
-
-      <div
-        className="relative z-10 text-gray-700 font-sans font-light tracking-wide pointer-events-none select-none text-center px-4 flex items-center justify-center break-words"
-        style={{ fontSize: Math.max(size * 0.14, 11), lineHeight: 1.15, maxWidth: '88%' }}
-      >
+      <div className="relative z-10 text-gray-700 font-sans font-light tracking-wide pointer-events-none select-none text-center px-4 flex items-center justify-center break-words"
+        style={{ fontSize: Math.max(size * 0.14, 11), lineHeight: 1.15, maxWidth: '88%' }}>
         {label}
       </div>
     </div>
   );
 }
 
-// ─── Content pill floating around a child bubble ──────────────────────────────
+// ─── Micro-orb SVG ────────────────────────────────────────────────────────────
+// Tiny glass sphere hinting at content within a child bubble.
 
-function ContentPills({
-  items,
-  bubbleSize,
-  color,
-}: {
-  items: string[];
-  bubbleSize: number;
+function MicroOrbSVG({ size, color }: { size: number; color: string }) {
+  // Stable unique id per color (shared across same-color orbs is fine)
+  const uid = `mo${color.replace(/[^0-9]/g, '')}`;
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ display: 'block' }}>
+      <defs>
+        <radialGradient id={`mo-bg-${uid}`} cx="35%" cy="28%" r="68%">
+          <stop offset="0%"   stopColor="#ffffff" stopOpacity="0.85" />
+          <stop offset="38%"  stopColor={color}   stopOpacity="0.28" />
+          <stop offset="100%" stopColor={color}   stopOpacity="0.52" />
+        </radialGradient>
+        <radialGradient id={`mo-rim-${uid}`} cx="50%" cy="50%" r="50%">
+          <stop offset="78%"  stopColor="#ffffff" stopOpacity="0" />
+          <stop offset="95%"  stopColor="#ffffff" stopOpacity="0.65" />
+          <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
+        </radialGradient>
+      </defs>
+      <circle cx={size/2} cy={size/2} r={size/2 - 0.4} fill={`url(#mo-bg-${uid})`} />
+      <circle cx={size/2} cy={size/2} r={size/2 - 0.4} fill={`url(#mo-rim-${uid})`} />
+    </svg>
+  );
+}
+
+// ─── Micro-orbs cluster ───────────────────────────────────────────────────────
+// Rendered inside the child bubble container (overflow: visible) so they travel
+// with the bubble when dragged.
+
+function MicroOrbs({ count, parentSize, color, visible }: {
+  count: number;
+  parentSize: number;
   color: string;
+  visible: boolean;
 }) {
+  if (count === 0) return null;
+
+  const orbSize = 13;
+  // Orbit radius: just touching the outer rim of the parent bubble
+  const orbitR = parentSize / 2 + orbSize / 2 + 2;
+  // Phase offset so orbs don't always cluster at top — use golden angle stepping
+  const phaseOffset = 0.6; // radians
+
+  return (
+    <>
+      {Array.from({ length: count }, (_, i) => {
+        const angle = phaseOffset + (i / count) * Math.PI * 2;
+        const cx = parentSize / 2 + Math.cos(angle) * orbitR;
+        const cy = parentSize / 2 + Math.sin(angle) * orbitR;
+
+        return (
+          <motion.div
+            key={i}
+            className="absolute pointer-events-none"
+            style={{ left: cx - orbSize / 2, top: cy - orbSize / 2, width: orbSize, height: orbSize }}
+            initial={{ opacity: 0, scale: 0.3 }}
+            animate={{ opacity: visible ? 0.85 : 0, scale: visible ? 1 : 0.3 }}
+            transition={{ type: 'spring', stiffness: 60, damping: 14, delay: i * 0.03 }}
+          >
+            <MicroOrbSVG size={orbSize} color={color} />
+          </motion.div>
+        );
+      })}
+    </>
+  );
+}
+
+// ─── Content pills ────────────────────────────────────────────────────────────
+
+function ContentPills({ items, bubbleSize, color }: { items: string[]; bubbleSize: number; color: string }) {
   const count = items.length;
   if (count === 0) return null;
 
-  // Distribute pills in a gentle arc, not a perfect ring — offset from top by 15°
   const startAngle = -Math.PI / 2 - 0.25;
-  const spread = count === 1 ? 0 : Math.PI * 1.55; // wide but not full circle
+  const spread = count === 1 ? 0 : Math.PI * 1.55;
   const radius = bubbleSize / 2 + 62;
 
   return (
@@ -267,43 +185,28 @@ function ContentPills({
       {items.map((item, i) => {
         const t = count === 1 ? 0.5 : i / (count - 1);
         const angle = startAngle + spread * t;
-        const px = Math.cos(angle) * radius;
-        const py = Math.sin(angle) * radius;
-
         return (
           <motion.div
             key={item}
             className="absolute pointer-events-none"
-            style={{
-              left: bubbleSize / 2,
-              top: bubbleSize / 2,
-              translateX: '-50%',
-              translateY: '-50%',
-            }}
+            style={{ left: bubbleSize / 2, top: bubbleSize / 2, translateX: '-50%', translateY: '-50%' }}
             initial={{ opacity: 0, x: 0, y: 0, scale: 0.6 }}
-            animate={{ opacity: 1, x: px, y: py, scale: 1 }}
+            animate={{ opacity: 1, x: Math.cos(angle) * radius, y: Math.sin(angle) * radius, scale: 1 }}
             exit={{ opacity: 0, x: 0, y: 0, scale: 0.6 }}
-            transition={{
-              delay: i * 0.045,
-              type: 'spring',
-              stiffness: 55,
-              damping: 14,
-            }}
+            transition={{ delay: i * 0.045, type: 'spring', stiffness: 55, damping: 14 }}
           >
-            <div
-              className="whitespace-nowrap text-gray-600 font-light select-none"
+            <div className="whitespace-nowrap font-light select-none"
               style={{
                 fontSize: 11.5,
                 letterSpacing: '0.01em',
-                background: `rgba(255,255,255,0.72)`,
+                background: 'rgba(255,255,255,0.72)',
                 backdropFilter: 'blur(8px)',
                 WebkitBackdropFilter: 'blur(8px)',
                 borderRadius: 20,
                 padding: '4px 11px',
-                boxShadow: `0 1px 8px rgba(0,0,0,0.06), inset 0 0 0 1px rgba(255,255,255,0.8)`,
-                color: color,
-              }}
-            >
+                boxShadow: '0 1px 8px rgba(0,0,0,0.06), inset 0 0 0 1px rgba(255,255,255,0.8)',
+                color,
+              }}>
               {item}
             </div>
           </motion.div>
@@ -313,7 +216,19 @@ function ContentPills({
   );
 }
 
-// ─── Main component ───────────────────────────────────────────────────────────
+// ─── Drag origin type ─────────────────────────────────────────────────────────
+
+interface DragOrigin {
+  mx: number;
+  my: number;
+  bx: number;
+  by: number;
+  dist: number;
+  /** Captured positions of all children when dragging a root bubble */
+  childOrigins: Record<string, { x: number; y: number }>;
+}
+
+// ─── Main canvas ──────────────────────────────────────────────────────────────
 
 export default function MindCanvas() {
   const [bubbles, setBubbles] = useState<BubbleData[]>(INITIAL_BUBBLES);
@@ -321,59 +236,56 @@ export default function MindCanvas() {
   const [selectedChild, setSelectedChild] = useState<string | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
-  const cameraX = useMotionValue(typeof window !== 'undefined' ? window.innerWidth / 2 : 640);
-  const cameraY = useMotionValue(typeof window !== 'undefined' ? window.innerHeight / 2 : 360);
+  const cameraX     = useMotionValue(typeof window !== 'undefined' ? window.innerWidth  / 2 : 640);
+  const cameraY     = useMotionValue(typeof window !== 'undefined' ? window.innerHeight / 2 : 360);
   const cameraScale = useMotionValue(1);
 
   useEffect(() => {
-    cameraX.set(window.innerWidth / 2);
+    cameraX.set(window.innerWidth  / 2);
     cameraY.set(window.innerHeight / 2);
   }, [cameraX, cameraY]);
 
-  // ── Focus a root bubble ──────────────────────────────────────────────────
+  // ── Focus root ───────────────────────────────────────────────────────────
 
   const focusRoot = useCallback((id: string | null) => {
     setFocusedRoot(id);
     setSelectedChild(null);
 
     if (id) {
-      const bubble = bubbles.find(b => b.id === id);
-      if (!bubble) return;
-      const targetScale = 1.55;
-      animate(cameraX, window.innerWidth / 2 - bubble.x * targetScale, { type: 'spring', stiffness: 45, damping: 15 });
-      animate(cameraY, window.innerHeight / 2 - bubble.y * targetScale, { type: 'spring', stiffness: 45, damping: 15 });
-      animate(cameraScale, targetScale, { type: 'spring', stiffness: 45, damping: 15 });
+      const b = bubbles.find(b => b.id === id);
+      if (!b) return;
+      const ts = 1.55;
+      animate(cameraX, window.innerWidth  / 2 - b.x * ts, { type: 'spring', stiffness: 45, damping: 15 });
+      animate(cameraY, window.innerHeight / 2 - b.y * ts, { type: 'spring', stiffness: 45, damping: 15 });
+      animate(cameraScale, ts, { type: 'spring', stiffness: 45, damping: 15 });
     } else {
-      const currentScale = cameraScale.get();
-      const cx = (window.innerWidth / 2 - cameraX.get()) / currentScale;
-      const cy = (window.innerHeight / 2 - cameraY.get()) / currentScale;
-      animate(cameraX, window.innerWidth / 2 - cx, { type: 'spring', stiffness: 45, damping: 15 });
+      const s  = cameraScale.get();
+      const cx = (window.innerWidth  / 2 - cameraX.get()) / s;
+      const cy = (window.innerHeight / 2 - cameraY.get()) / s;
+      animate(cameraX, window.innerWidth  / 2 - cx, { type: 'spring', stiffness: 45, damping: 15 });
       animate(cameraY, window.innerHeight / 2 - cy, { type: 'spring', stiffness: 45, damping: 15 });
       animate(cameraScale, 1, { type: 'spring', stiffness: 45, damping: 15 });
     }
   }, [bubbles, cameraX, cameraY, cameraScale]);
 
-  // ── Escape key handling ──────────────────────────────────────────────────
+  // ── Escape ───────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
+    const h = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
-      if (selectedChild) {
-        setSelectedChild(null);
-      } else if (focusedRoot) {
-        focusRoot(null);
-      }
+      if (selectedChild) setSelectedChild(null);
+      else if (focusedRoot) focusRoot(null);
     };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
   }, [focusedRoot, selectedChild, focusRoot]);
 
   // ── Canvas pan ───────────────────────────────────────────────────────────
 
   const isPanning = useRef(false);
-  const lastPan = useRef({ x: 0, y: 0 });
+  const lastPan   = useRef({ x: 0, y: 0 });
 
-  const onContainerPointerDown = (e: React.PointerEvent) => {
+  const onContainerDown = (e: React.PointerEvent) => {
     if (e.target !== containerRef.current) return;
     isPanning.current = true;
     lastPan.current = { x: e.clientX, y: e.clientY };
@@ -381,22 +293,17 @@ export default function MindCanvas() {
     if (selectedChild) setSelectedChild(null);
     else if (focusedRoot) focusRoot(null);
   };
-
-  const onContainerPointerMove = (e: React.PointerEvent) => {
+  const onContainerMove = (e: React.PointerEvent) => {
     if (!isPanning.current) return;
     cameraX.set(cameraX.get() + e.clientX - lastPan.current.x);
     cameraY.set(cameraY.get() + e.clientY - lastPan.current.y);
     lastPan.current = { x: e.clientX, y: e.clientY };
   };
-
-  const onContainerPointerUp = (e: React.PointerEvent) => {
-    if (isPanning.current) {
-      isPanning.current = false;
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    }
+  const onContainerUp = (e: React.PointerEvent) => {
+    if (isPanning.current) { isPanning.current = false; e.currentTarget.releasePointerCapture(e.pointerId); }
   };
 
-  // ── Scroll to zoom ───────────────────────────────────────────────────────
+  // ── Zoom ─────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     const el = containerRef.current;
@@ -404,9 +311,9 @@ export default function MindCanvas() {
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       if (focusedRoot) return;
-      const factor = Math.exp(-e.deltaY * 0.002);
+      const f  = Math.exp(-e.deltaY * 0.002);
       const s0 = cameraScale.get();
-      const s1 = Math.min(Math.max(0.1, s0 * factor), 4);
+      const s1 = Math.min(Math.max(0.1, s0 * f), 4);
       const rect = el.getBoundingClientRect();
       const mx = e.clientX - rect.left;
       const my = e.clientY - rect.top;
@@ -418,53 +325,71 @@ export default function MindCanvas() {
     return () => el.removeEventListener('wheel', onWheel);
   }, [focusedRoot, cameraX, cameraY, cameraScale]);
 
-  // ── Bubble drag ──────────────────────────────────────────────────────────
+  // ── Bubble drag — with family gravity ────────────────────────────────────
+  // Dragging a root pulls all its children with it (captured at drag-start).
+  // Dragging a child only moves that child; its micro-orbs follow automatically
+  // because they're rendered as children of the bubble's div.
 
-  const dragging = useRef<string | null>(null);
-  const dragOrigin = useRef({ mx: 0, my: 0, bx: 0, by: 0, dist: 0 });
+  const dragging   = useRef<string | null>(null);
+  const dragOrigin = useRef<DragOrigin>({ mx: 0, my: 0, bx: 0, by: 0, dist: 0, childOrigins: {} });
 
-  const onBubblePointerDown = (e: React.PointerEvent, id: string) => {
+  const onBubbleDown = (e: React.PointerEvent, id: string) => {
     e.stopPropagation();
     e.currentTarget.setPointerCapture(e.pointerId);
     dragging.current = id;
-    const b = bubbles.find(b => b.id === id)!;
-    dragOrigin.current = { mx: e.clientX, my: e.clientY, bx: b.x, by: b.y, dist: 0 };
+
+    // Use the latest bubbles state (captured in closure via ref below)
+    setBubbles(prev => {
+      const b = prev.find(b => b.id === id)!;
+      // Capture child positions for family drag
+      const childOrigins: Record<string, { x: number; y: number }> = {};
+      if (b.type === 'root') {
+        prev.filter(c => c.parentId === id).forEach(c => {
+          childOrigins[c.id] = { x: c.x, y: c.y };
+        });
+      }
+      dragOrigin.current = { mx: e.clientX, my: e.clientY, bx: b.x, by: b.y, dist: 0, childOrigins };
+      return prev; // no state change here, just reading
+    });
   };
 
-  const onBubblePointerMove = (e: React.PointerEvent) => {
+  const onBubbleMove = (e: React.PointerEvent) => {
     if (!dragging.current) return;
     const dx = e.clientX - dragOrigin.current.mx;
     const dy = e.clientY - dragOrigin.current.my;
     dragOrigin.current.dist = Math.hypot(dx, dy);
     const s = cameraScale.get();
-    setBubbles(prev =>
-      prev.map(b =>
-        b.id === dragging.current
-          ? { ...b, x: dragOrigin.current.bx + dx / s, y: dragOrigin.current.by + dy / s }
-          : b
-      )
-    );
+    const sdx = dx / s;
+    const sdy = dy / s;
+    const id = dragging.current;
+
+    setBubbles(prev => prev.map(b => {
+      // The dragged bubble itself
+      if (b.id === id) return { ...b, x: dragOrigin.current.bx + sdx, y: dragOrigin.current.by + sdy };
+      // Children of a dragged root move by the same delta (family gravity)
+      const co = dragOrigin.current.childOrigins[b.id];
+      if (co) return { ...b, x: co.x + sdx, y: co.y + sdy };
+      return b;
+    }));
   };
 
-  const onBubblePointerUp = (e: React.PointerEvent, id: string) => {
+  const onBubbleUp = (e: React.PointerEvent, id: string) => {
     e.stopPropagation();
     e.currentTarget.releasePointerCapture(e.pointerId);
     const isClick = dragOrigin.current.dist < 10;
 
     if (isClick) {
-      const bubble = bubbles.find(b => b.id === id);
-      if (!bubble) { dragging.current = null; return; }
-
-      if (bubble.type === 'root') {
-        // Toggle root focus
-        focusRoot(focusedRoot === id ? null : id);
-      } else {
-        // Child click — focus parent if needed, then select child
-        if (focusedRoot !== bubble.parentId) {
-          focusRoot(bubble.parentId ?? null);
+      setBubbles(prev => {
+        const bubble = prev.find(b => b.id === id);
+        if (!bubble) return prev;
+        if (bubble.type === 'root') {
+          focusRoot(focusedRoot === id ? null : id);
+        } else {
+          if (focusedRoot !== bubble.parentId) focusRoot(bubble.parentId ?? null);
+          setSelectedChild(sc => sc === id ? null : id);
         }
-        setSelectedChild(prev => prev === id ? null : id);
-      }
+        return prev;
+      });
     }
 
     dragging.current = null;
@@ -477,45 +402,40 @@ export default function MindCanvas() {
       ref={containerRef}
       className="w-screen h-screen overflow-hidden touch-none"
       style={{ background: 'linear-gradient(145deg, #fafafa 0%, #f5f5f7 100%)' }}
-      onPointerDown={onContainerPointerDown}
-      onPointerMove={onContainerPointerMove}
-      onPointerUp={onContainerPointerUp}
-      onPointerCancel={onContainerPointerUp}
-      onPointerLeave={onContainerPointerUp}
+      onPointerDown={onContainerDown}
+      onPointerMove={onContainerMove}
+      onPointerUp={onContainerUp}
+      onPointerCancel={onContainerUp}
+      onPointerLeave={onContainerUp}
     >
       <motion.div
         className="absolute top-0 left-0 origin-top-left"
         style={{ x: cameraX, y: cameraY, scale: cameraScale }}
       >
         {bubbles.map(bubble => {
-          const size = getBubbleSize(bubble, bubbles);
+          const size   = getBubbleSize(bubble, bubbles);
           const isRoot = bubble.type === 'root';
           const isSelected = bubble.id === selectedChild;
-          const isFocusedRoot = bubble.id === focusedRoot;
 
-          // Visibility rules when inside a root universe
+          // ── Visibility logic ───────────────────────────────────────────
           let muted = false;
           if (focusedRoot) {
-            if (isRoot && bubble.id !== focusedRoot) {
-              muted = true;
-            } else if (!isRoot && bubble.parentId !== focusedRoot) {
-              muted = true;
-            } else if (selectedChild && !isRoot && !isSelected && bubble.id !== focusedRoot) {
-              // Inside child focus, other siblings step back slightly
-              muted = false; // keep visible but dim handled below
-            }
+            if (isRoot && bubble.id !== focusedRoot) muted = true;
+            else if (!isRoot && bubble.parentId !== focusedRoot) muted = true;
           }
 
-          // Siblings dim when a child is selected (not fully muted)
           const siblingDimmed =
-            !!selectedChild &&
-            !isRoot &&
+            !!selectedChild && !isRoot &&
             bubble.parentId === focusedRoot &&
             bubble.id !== selectedChild;
 
-          const opacity = muted ? 0.12 : siblingDimmed ? 0.45 : 1;
-          const blur = muted ? '6px' : 'none';
-          const scale = isSelected ? 1.1 : isFocusedRoot ? 1.0 : 1;
+          const opacity = muted ? 0.11 : siblingDimmed ? 0.42 : 1;
+          const blur    = muted ? '6px' : 'none';
+          const scale   = isSelected ? 1.1 : 1;
+
+          // Micro-orbs visible whenever the child is not muted and not selected
+          // (when selected, content pills replace them)
+          const showMicroOrbs = !isRoot && !muted && !isSelected;
 
           return (
             <motion.div
@@ -527,37 +447,44 @@ export default function MindCanvas() {
                 width: size,
                 height: size,
                 touchAction: 'none',
+                // Allow micro-orbs to render outside the bounding box
+                overflow: 'visible',
               }}
               initial={false}
               animate={{ opacity, filter: `blur(${blur})`, scale }}
               whileHover={!muted ? { scale: isSelected ? 1.1 : 1.04, filter: 'blur(0px) brightness(1.06)' } : undefined}
               transition={{ type: 'spring', stiffness: 55, damping: 16 }}
-              onPointerDown={e => onBubblePointerDown(e, bubble.id)}
-              onPointerMove={onBubblePointerMove}
-              onPointerUp={e => onBubblePointerUp(e, bubble.id)}
-              onPointerCancel={e => onBubblePointerUp(e, bubble.id)}
+              onPointerDown={e => onBubbleDown(e, bubble.id)}
+              onPointerMove={onBubbleMove}
+              onPointerUp={e => onBubbleUp(e, bubble.id)}
+              onPointerCancel={e => onBubbleUp(e, bubble.id)}
             >
               <GlassBubbleSVG size={size} color={bubble.color} label={bubble.label} />
 
-              {/* Content pills — only for selected child bubble */}
-              {isSelected && bubble.content.length > 0 && (
-                <ContentPills
-                  items={bubble.content}
-                  bubbleSize={size}
+              {/* Micro-orbs — always present on child bubbles, fade when selected */}
+              {!isRoot && (
+                <MicroOrbs
+                  count={bubble.content.length}
+                  parentSize={size}
                   color={bubble.color}
+                  visible={showMicroOrbs}
                 />
+              )}
+
+              {/* Content pills — bloom when child is selected */}
+              {isSelected && bubble.content.length > 0 && (
+                <ContentPills items={bubble.content} bubbleSize={size} color={bubble.color} />
               )}
             </motion.div>
           );
         })}
       </motion.div>
 
-      {/* Subtle hint — fades out once user interacts */}
       {!focusedRoot && (
         <motion.p
           className="absolute bottom-8 left-1/2 -translate-x-1/2 text-gray-400 font-light text-xs tracking-widest pointer-events-none select-none"
           initial={{ opacity: 0 }}
-          animate={{ opacity: 0.5 }}
+          animate={{ opacity: 0.45 }}
           transition={{ delay: 1.2, duration: 1.5 }}
         >
           click to enter
