@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, useMotionValue, animate } from 'framer-motion';
 
+// ─── Types ────────────────────────────────────────────────────────────────────
+
 type BubbleType = 'root' | 'child';
 
 interface BubbleData {
@@ -11,78 +13,229 @@ interface BubbleData {
   x: number;
   y: number;
   color: string;
+  /** Content items living inside this bubble — their count drives its size */
+  content: string[];
 }
 
+// ─── Content data ─────────────────────────────────────────────────────────────
+// Each child bubble's size is derived from how many content items it holds.
+// Root bubble size is derived from the total content weight of its children.
+
 const INITIAL_BUBBLES: BubbleData[] = [
-  // Root Bubbles
-  { id: 'career', type: 'root', label: 'Career', x: -300, y: -150, color: 'hsl(250, 60%, 65%)' },
-  { id: 'personal', type: 'root', label: 'Personal', x: 200, y: 100, color: 'hsl(340, 60%, 65%)' },
-  { id: 'sss', type: 'root', label: 'SSS', x: -100, y: 300, color: 'hsl(170, 40%, 55%)' },
-  
-  // Career Children
-  { id: 'c1', type: 'child', parentId: 'career', label: 'Visionary', x: -430, y: -240, color: 'hsl(250, 60%, 65%)' },
-  { id: 'c2', type: 'child', parentId: 'career', label: 'New Project', x: -170, y: -250, color: 'hsl(250, 60%, 65%)' },
-  { id: 'c3', type: 'child', parentId: 'career', label: 'Learning', x: -380, y: -10, color: 'hsl(250, 60%, 65%)' },
+  // ── Root bubbles ──────────────────────────────────────────────────────────
+  {
+    id: 'career',
+    type: 'root',
+    label: 'Career',
+    x: -310, y: -160,
+    color: 'hsl(250, 60%, 65%)',
+    content: [], // root size driven by children
+  },
+  {
+    id: 'personal',
+    type: 'root',
+    label: 'Personal',
+    x: 220, y: 110,
+    color: 'hsl(340, 60%, 65%)',
+    content: [],
+  },
+  {
+    id: 'sss',
+    type: 'root',
+    label: 'SSS',
+    x: -90, y: 320,
+    color: 'hsl(170, 40%, 55%)',
+    content: [],
+  },
 
-  // Personal Children
-  { id: 'p1', type: 'child', parentId: 'personal', label: 'Fitness', x: 350, y: 20, color: 'hsl(340, 60%, 65%)' },
-  { id: 'p2', type: 'child', parentId: 'personal', label: 'Reading', x: 70, y: -10, color: 'hsl(340, 60%, 65%)' },
-  { id: 'p3', type: 'child', parentId: 'personal', label: 'Family', x: 280, y: 230, color: 'hsl(340, 60%, 65%)' },
+  // ── Career children ───────────────────────────────────────────────────────
+  {
+    id: 'c-visionary',
+    type: 'child',
+    parentId: 'career',
+    label: 'Visionary',
+    x: -450, y: -250,
+    color: 'hsl(250, 60%, 65%)',
+    // 3 items → smaller bubble
+    content: ['10-year vision', 'Industry shifts', 'Long game'],
+  },
+  {
+    id: 'c-newproject',
+    type: 'child',
+    parentId: 'career',
+    label: 'New Project',
+    x: -185, y: -260,
+    color: 'hsl(250, 60%, 65%)',
+    // 5 items → medium bubble
+    content: ['Kickoff brief', 'Timeline draft', 'Stakeholders', 'MVP scope', 'Dependencies'],
+  },
+  {
+    id: 'c-learning',
+    type: 'child',
+    parentId: 'career',
+    label: 'Learning',
+    x: -400, y: -10,
+    color: 'hsl(250, 60%, 65%)',
+    // 3 items → smaller bubble
+    content: ['TypeScript', 'System design', 'Writing clearly'],
+  },
 
-  // SSS Children
-  { id: 's1', type: 'child', parentId: 'sss', label: 'Event', x: -240, y: 260, color: 'hsl(170, 40%, 55%)' },
-  { id: 's2', type: 'child', parentId: 'sss', label: 'Planning', x: 40, y: 240, color: 'hsl(170, 40%, 55%)' },
-  { id: 's3', type: 'child', parentId: 'sss', label: 'Marketing', x: -70, y: 440, color: 'hsl(170, 40%, 55%)' },
+  // ── Personal children ─────────────────────────────────────────────────────
+  {
+    id: 'p-fitness',
+    type: 'child',
+    parentId: 'personal',
+    label: 'Fitness',
+    x: 380, y: 30,
+    color: 'hsl(340, 60%, 65%)',
+    // 4 items → medium bubble
+    content: ['Morning runs', 'Zone 2 cardio', 'Mobility', 'Sleep quality'],
+  },
+  {
+    id: 'p-reading',
+    type: 'child',
+    parentId: 'personal',
+    label: 'Reading',
+    x: 80, y: 0,
+    color: 'hsl(340, 60%, 65%)',
+    // 4 items → medium bubble
+    content: ['Deep Work', 'Prince of Persia', 'Newsletter backlog', 'Atomic Habits'],
+  },
+  {
+    id: 'p-family',
+    type: 'child',
+    parentId: 'personal',
+    label: 'Family',
+    x: 290, y: 245,
+    color: 'hsl(340, 60%, 65%)',
+    // 3 items → smaller bubble
+    content: ['Sunday dinners', 'Trip planning', "Dad's birthday"],
+  },
+
+  // ── SSS children ──────────────────────────────────────────────────────────
+  {
+    id: 's-event',
+    type: 'child',
+    parentId: 'sss',
+    label: 'Event',
+    x: -255, y: 270,
+    color: 'hsl(170, 40%, 55%)',
+    // 6 items → large bubble
+    content: ['Venue confirmed', 'Speakers', 'Catering', 'AV setup', 'Guest list', 'Comms plan'],
+  },
+  {
+    id: 's-planning',
+    type: 'child',
+    parentId: 'sss',
+    label: 'Planning',
+    x: 50, y: 255,
+    color: 'hsl(170, 40%, 55%)',
+    // 3 items → smaller bubble
+    content: ['Q3 roadmap', 'Budget review', 'Team structure'],
+  },
+  {
+    id: 's-marketing',
+    type: 'child',
+    parentId: 'sss',
+    label: 'Marketing',
+    x: -65, y: 460,
+    color: 'hsl(170, 40%, 55%)',
+    // 6 items → large bubble (most active — densest mental load)
+    content: ['Brand refresh', 'Social strategy', 'Email cadence', 'Partnerships', 'Content calendar', 'Analytics'],
+  },
 ];
 
-function GlassBubbleSVG({ size, color, label }: { size: number; color: string; label: string }) {
-  const idSafe = color.replace(/[^a-zA-Z0-9]/g, '') + size + label.replace(/\s/g, '');
-  
+// ─── Size helpers ─────────────────────────────────────────────────────────────
+
+const BASE_CHILD = 72;
+const CONTENT_STEP = 16; // px per content item
+const MAX_CHILD = 190;
+
+const BASE_ROOT = 128;
+const CHILD_WEIGHT_STEP = 2.5; // px per total content item across children
+
+function getChildSize(bubble: BubbleData): number {
+  return Math.min(BASE_CHILD + bubble.content.length * CONTENT_STEP, MAX_CHILD);
+}
+
+function getRootSize(rootId: string, allBubbles: BubbleData[]): number {
+  const totalContent = allBubbles
+    .filter(b => b.parentId === rootId)
+    .reduce((sum, b) => sum + b.content.length, 0);
+  return Math.min(BASE_ROOT + totalContent * CHILD_WEIGHT_STEP, 210);
+}
+
+function getBubbleSize(bubble: BubbleData, allBubbles: BubbleData[]): number {
+  return bubble.type === 'root'
+    ? getRootSize(bubble.id, allBubbles)
+    : getChildSize(bubble);
+}
+
+// ─── Glass Bubble SVG ─────────────────────────────────────────────────────────
+
+function GlassBubbleSVG({
+  size,
+  color,
+  label,
+}: {
+  size: number;
+  color: string;
+  label: string;
+}) {
+  const uid = (color + size + label).replace(/[^a-zA-Z0-9]/g, '');
+
   return (
-    <div style={{ width: size, height: size }} className="relative rounded-full flex items-center justify-center">
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="absolute inset-0 pointer-events-none overflow-visible">
+    <div
+      style={{ width: size, height: size }}
+      className="relative rounded-full flex items-center justify-center"
+    >
+      <svg
+        width={size}
+        height={size}
+        viewBox={`0 0 ${size} ${size}`}
+        className="absolute inset-0 pointer-events-none overflow-visible"
+      >
         <defs>
-          <radialGradient id={`bg-${idSafe}`} cx="30%" cy="30%" r="70%">
+          <radialGradient id={`bg-${uid}`} cx="30%" cy="30%" r="70%">
             <stop offset="0%" stopColor={color} stopOpacity="0.08" />
             <stop offset="70%" stopColor={color} stopOpacity="0.15" />
             <stop offset="100%" stopColor={color} stopOpacity="0.4" />
           </radialGradient>
-          
-          <radialGradient id={`rim-${idSafe}`} cx="50%" cy="50%" r="50%">
+
+          <radialGradient id={`rim-${uid}`} cx="50%" cy="50%" r="50%">
             <stop offset="85%" stopColor="#ffffff" stopOpacity="0" />
             <stop offset="97%" stopColor="#ffffff" stopOpacity="0.9" />
             <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
           </radialGradient>
 
-          <radialGradient id={`specular-${idSafe}`} cx="50%" cy="50%" r="50%">
+          <radialGradient id={`specular-${uid}`} cx="50%" cy="50%" r="50%">
             <stop offset="0%" stopColor="#ffffff" stopOpacity="0.95" />
             <stop offset="25%" stopColor="#ffffff" stopOpacity="0.3" />
             <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
           </radialGradient>
 
-          <radialGradient id={`glow-${idSafe}`} cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor={color} stopOpacity="0.6" />
+          <radialGradient id={`glow-${uid}`} cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor={color} stopOpacity="0.55" />
             <stop offset="100%" stopColor={color} stopOpacity="0" />
           </radialGradient>
         </defs>
 
-        <circle cx={size/2} cy={size/2} r={size/2 - 1} fill={`url(#bg-${idSafe})`} />
-        <circle cx={size/2} cy={size/2} r={size/2 - 1} fill={`url(#rim-${idSafe})`} />
-        <circle cx={size*0.65} cy={size*0.7} r={size*0.4} fill={`url(#glow-${idSafe})`} />
-        
-        <ellipse 
-          cx={size * 0.28} 
-          cy={size * 0.25} 
-          rx={size * 0.18} 
-          ry={size * 0.1} 
-          fill={`url(#specular-${idSafe})`} 
-          transform={`rotate(-40, ${size * 0.28}, ${size * 0.25})`} 
+        <circle cx={size / 2} cy={size / 2} r={size / 2 - 1} fill={`url(#bg-${uid})`} />
+        <circle cx={size / 2} cy={size / 2} r={size / 2 - 1} fill={`url(#rim-${uid})`} />
+        <circle cx={size * 0.65} cy={size * 0.7} r={size * 0.4} fill={`url(#glow-${uid})`} />
+        <ellipse
+          cx={size * 0.28}
+          cy={size * 0.25}
+          rx={size * 0.18}
+          ry={size * 0.1}
+          fill={`url(#specular-${uid})`}
+          transform={`rotate(-40, ${size * 0.28}, ${size * 0.25})`}
         />
       </svg>
-      
-      <div 
-        className="relative z-10 text-gray-800 font-sans font-light tracking-wide pointer-events-none select-none text-center px-4 flex items-center justify-center break-words" 
-        style={{ fontSize: size * 0.14, lineHeight: 1.1, maxWidth: '90%' }}
+
+      <div
+        className="relative z-10 text-gray-700 font-sans font-light tracking-wide pointer-events-none select-none text-center px-4 flex items-center justify-center break-words"
+        style={{ fontSize: Math.max(size * 0.14, 11), lineHeight: 1.15, maxWidth: '88%' }}
       >
         {label}
       </div>
@@ -90,241 +243,326 @@ function GlassBubbleSVG({ size, color, label }: { size: number; color: string; l
   );
 }
 
+// ─── Content pill floating around a child bubble ──────────────────────────────
+
+function ContentPills({
+  items,
+  bubbleSize,
+  color,
+}: {
+  items: string[];
+  bubbleSize: number;
+  color: string;
+}) {
+  const count = items.length;
+  if (count === 0) return null;
+
+  // Distribute pills in a gentle arc, not a perfect ring — offset from top by 15°
+  const startAngle = -Math.PI / 2 - 0.25;
+  const spread = count === 1 ? 0 : Math.PI * 1.55; // wide but not full circle
+  const radius = bubbleSize / 2 + 62;
+
+  return (
+    <>
+      {items.map((item, i) => {
+        const t = count === 1 ? 0.5 : i / (count - 1);
+        const angle = startAngle + spread * t;
+        const px = Math.cos(angle) * radius;
+        const py = Math.sin(angle) * radius;
+
+        return (
+          <motion.div
+            key={item}
+            className="absolute pointer-events-none"
+            style={{
+              left: bubbleSize / 2,
+              top: bubbleSize / 2,
+              translateX: '-50%',
+              translateY: '-50%',
+            }}
+            initial={{ opacity: 0, x: 0, y: 0, scale: 0.6 }}
+            animate={{ opacity: 1, x: px, y: py, scale: 1 }}
+            exit={{ opacity: 0, x: 0, y: 0, scale: 0.6 }}
+            transition={{
+              delay: i * 0.045,
+              type: 'spring',
+              stiffness: 55,
+              damping: 14,
+            }}
+          >
+            <div
+              className="whitespace-nowrap text-gray-600 font-light select-none"
+              style={{
+                fontSize: 11.5,
+                letterSpacing: '0.01em',
+                background: `rgba(255,255,255,0.72)`,
+                backdropFilter: 'blur(8px)',
+                WebkitBackdropFilter: 'blur(8px)',
+                borderRadius: 20,
+                padding: '4px 11px',
+                boxShadow: `0 1px 8px rgba(0,0,0,0.06), inset 0 0 0 1px rgba(255,255,255,0.8)`,
+                color: color,
+              }}
+            >
+              {item}
+            </div>
+          </motion.div>
+        );
+      })}
+    </>
+  );
+}
+
+// ─── Main component ───────────────────────────────────────────────────────────
+
 export default function MindCanvas() {
   const [bubbles, setBubbles] = useState<BubbleData[]>(INITIAL_BUBBLES);
-  const [focusedBubble, setFocusedBubble] = useState<string | null>(null);
+  const [focusedRoot, setFocusedRoot] = useState<string | null>(null);
+  const [selectedChild, setSelectedChild] = useState<string | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
-  
-  // Camera State
-  const cameraX = useMotionValue(typeof window !== 'undefined' ? window.innerWidth / 2 : 500);
-  const cameraY = useMotionValue(typeof window !== 'undefined' ? window.innerHeight / 2 : 500);
+  const cameraX = useMotionValue(typeof window !== 'undefined' ? window.innerWidth / 2 : 640);
+  const cameraY = useMotionValue(typeof window !== 'undefined' ? window.innerHeight / 2 : 360);
   const cameraScale = useMotionValue(1);
 
-  // Initialize camera to center on mount
   useEffect(() => {
     cameraX.set(window.innerWidth / 2);
     cameraY.set(window.innerHeight / 2);
   }, [cameraX, cameraY]);
 
-  // Focus Logic
-  const focusBubble = useCallback((id: string | null) => {
-    setFocusedBubble(id);
+  // ── Focus a root bubble ──────────────────────────────────────────────────
+
+  const focusRoot = useCallback((id: string | null) => {
+    setFocusedRoot(id);
+    setSelectedChild(null);
+
     if (id) {
       const bubble = bubbles.find(b => b.id === id);
-      if (bubble) {
-        const targetScale = 1.6;
-        const targetX = window.innerWidth / 2 - bubble.x * targetScale;
-        const targetY = window.innerHeight / 2 - bubble.y * targetScale;
-
-        animate(cameraX, targetX, { type: 'spring', stiffness: 45, damping: 15 });
-        animate(cameraY, targetY, { type: 'spring', stiffness: 45, damping: 15 });
-        animate(cameraScale, targetScale, { type: 'spring', stiffness: 45, damping: 15 });
-      }
+      if (!bubble) return;
+      const targetScale = 1.55;
+      animate(cameraX, window.innerWidth / 2 - bubble.x * targetScale, { type: 'spring', stiffness: 45, damping: 15 });
+      animate(cameraY, window.innerHeight / 2 - bubble.y * targetScale, { type: 'spring', stiffness: 45, damping: 15 });
+      animate(cameraScale, targetScale, { type: 'spring', stiffness: 45, damping: 15 });
     } else {
-      // Zoom out keeping current visual center
       const currentScale = cameraScale.get();
       const cx = (window.innerWidth / 2 - cameraX.get()) / currentScale;
       const cy = (window.innerHeight / 2 - cameraY.get()) / currentScale;
-
-      const targetScale = 1;
-      const targetX = window.innerWidth / 2 - cx * targetScale;
-      const targetY = window.innerHeight / 2 - cy * targetScale;
-
-      animate(cameraX, targetX, { type: 'spring', stiffness: 45, damping: 15 });
-      animate(cameraY, targetY, { type: 'spring', stiffness: 45, damping: 15 });
-      animate(cameraScale, targetScale, { type: 'spring', stiffness: 45, damping: 15 });
+      animate(cameraX, window.innerWidth / 2 - cx, { type: 'spring', stiffness: 45, damping: 15 });
+      animate(cameraY, window.innerHeight / 2 - cy, { type: 'spring', stiffness: 45, damping: 15 });
+      animate(cameraScale, 1, { type: 'spring', stiffness: 45, damping: 15 });
     }
   }, [bubbles, cameraX, cameraY, cameraScale]);
 
-  // Escape to unfocus
+  // ── Escape key handling ──────────────────────────────────────────────────
+
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && focusedBubble) {
-        focusBubble(null);
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (selectedChild) {
+        setSelectedChild(null);
+      } else if (focusedRoot) {
+        focusRoot(null);
       }
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [focusedBubble, focusBubble]);
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [focusedRoot, selectedChild, focusRoot]);
 
-  // Canvas Panning
+  // ── Canvas pan ───────────────────────────────────────────────────────────
+
   const isPanning = useRef(false);
   const lastPan = useRef({ x: 0, y: 0 });
 
-  const handleContainerPointerDown = (e: React.PointerEvent) => {
-    if (e.target === containerRef.current) {
-      isPanning.current = true;
-      lastPan.current = { x: e.clientX, y: e.clientY };
-      e.currentTarget.setPointerCapture(e.pointerId);
-      
-      if (focusedBubble) {
-        focusBubble(null);
-      }
-    }
+  const onContainerPointerDown = (e: React.PointerEvent) => {
+    if (e.target !== containerRef.current) return;
+    isPanning.current = true;
+    lastPan.current = { x: e.clientX, y: e.clientY };
+    e.currentTarget.setPointerCapture(e.pointerId);
+    if (selectedChild) setSelectedChild(null);
+    else if (focusedRoot) focusRoot(null);
   };
 
-  const handleContainerPointerMove = (e: React.PointerEvent) => {
-    if (isPanning.current) {
-      const dx = e.clientX - lastPan.current.x;
-      const dy = e.clientY - lastPan.current.y;
-      cameraX.set(cameraX.get() + dx);
-      cameraY.set(cameraY.get() + dy);
-      lastPan.current = { x: e.clientX, y: e.clientY };
-    }
+  const onContainerPointerMove = (e: React.PointerEvent) => {
+    if (!isPanning.current) return;
+    cameraX.set(cameraX.get() + e.clientX - lastPan.current.x);
+    cameraY.set(cameraY.get() + e.clientY - lastPan.current.y);
+    lastPan.current = { x: e.clientX, y: e.clientY };
   };
 
-  const handleContainerPointerUp = (e: React.PointerEvent) => {
+  const onContainerPointerUp = (e: React.PointerEvent) => {
     if (isPanning.current) {
       isPanning.current = false;
       e.currentTarget.releasePointerCapture(e.pointerId);
     }
   };
 
-  // Canvas Zooming
+  // ── Scroll to zoom ───────────────────────────────────────────────────────
+
   useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-
-    const handleWheel = (e: WheelEvent) => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      if (focusedBubble) return; // Optional: disable zooming while focused
-
-      const zoomSensitivity = 0.002;
-      const scaleChange = Math.exp(-e.deltaY * zoomSensitivity);
-      const currentScale = cameraScale.get();
-      const newScale = Math.min(Math.max(0.1, currentScale * scaleChange), 4);
-
-      const rect = container.getBoundingClientRect();
-      const mouseX = e.clientX - rect.left;
-      const mouseY = e.clientY - rect.top;
-
-      const currentX = cameraX.get();
-      const currentY = cameraY.get();
-
-      const newX = mouseX - (mouseX - currentX) * (newScale / currentScale);
-      const newY = mouseY - (mouseY - currentY) * (newScale / currentScale);
-
-      cameraScale.set(newScale);
-      cameraX.set(newX);
-      cameraY.set(newY);
+      if (focusedRoot) return;
+      const factor = Math.exp(-e.deltaY * 0.002);
+      const s0 = cameraScale.get();
+      const s1 = Math.min(Math.max(0.1, s0 * factor), 4);
+      const rect = el.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      cameraX.set(mx - (mx - cameraX.get()) * (s1 / s0));
+      cameraY.set(my - (my - cameraY.get()) * (s1 / s0));
+      cameraScale.set(s1);
     };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [focusedRoot, cameraX, cameraY, cameraScale]);
 
-    container.addEventListener('wheel', handleWheel, { passive: false });
-    return () => container.removeEventListener('wheel', handleWheel);
-  }, [focusedBubble, cameraScale, cameraX, cameraY]);
+  // ── Bubble drag ──────────────────────────────────────────────────────────
 
-  // Bubble Dragging
-  const draggingBubbleId = useRef<string | null>(null);
-  const dragStart = useRef({ x: 0, y: 0, bx: 0, by: 0, distance: 0 });
+  const dragging = useRef<string | null>(null);
+  const dragOrigin = useRef({ mx: 0, my: 0, bx: 0, by: 0, dist: 0 });
 
-  const handleBubblePointerDown = (e: React.PointerEvent, id: string) => {
+  const onBubblePointerDown = (e: React.PointerEvent, id: string) => {
     e.stopPropagation();
     e.currentTarget.setPointerCapture(e.pointerId);
-    draggingBubbleId.current = id;
-    const bubble = bubbles.find(b => b.id === id)!;
-    dragStart.current = {
-      x: e.clientX,
-      y: e.clientY,
-      bx: bubble.x,
-      by: bubble.y,
-      distance: 0
-    };
+    dragging.current = id;
+    const b = bubbles.find(b => b.id === id)!;
+    dragOrigin.current = { mx: e.clientX, my: e.clientY, bx: b.x, by: b.y, dist: 0 };
   };
 
-  const handleBubblePointerMove = (e: React.PointerEvent) => {
-    if (draggingBubbleId.current) {
-      const dx = e.clientX - dragStart.current.x;
-      const dy = e.clientY - dragStart.current.y;
-      dragStart.current.distance = Math.sqrt(dx * dx + dy * dy);
-      
-      const scale = cameraScale.get();
-      const scaledDx = dx / scale;
-      const scaledDy = dy / scale;
-
-      setBubbles(prev => prev.map(b => 
-        b.id === draggingBubbleId.current 
-          ? { ...b, x: dragStart.current.bx + scaledDx, y: dragStart.current.by + scaledDy } 
+  const onBubblePointerMove = (e: React.PointerEvent) => {
+    if (!dragging.current) return;
+    const dx = e.clientX - dragOrigin.current.mx;
+    const dy = e.clientY - dragOrigin.current.my;
+    dragOrigin.current.dist = Math.hypot(dx, dy);
+    const s = cameraScale.get();
+    setBubbles(prev =>
+      prev.map(b =>
+        b.id === dragging.current
+          ? { ...b, x: dragOrigin.current.bx + dx / s, y: dragOrigin.current.by + dy / s }
           : b
-      ));
-    }
+      )
+    );
   };
 
-  const handleBubblePointerUp = (e: React.PointerEvent, id: string) => {
+  const onBubblePointerUp = (e: React.PointerEvent, id: string) => {
     e.stopPropagation();
     e.currentTarget.releasePointerCapture(e.pointerId);
-    
-    const isRoot = bubbles.find(b => b.id === id)?.type === 'root';
-    
-    // Treat as click if moved less than 10 pixels total
-    if (dragStart.current.distance < 10 && isRoot) {
-      if (focusedBubble === id) {
-        focusBubble(null);
+    const isClick = dragOrigin.current.dist < 10;
+
+    if (isClick) {
+      const bubble = bubbles.find(b => b.id === id);
+      if (!bubble) { dragging.current = null; return; }
+
+      if (bubble.type === 'root') {
+        // Toggle root focus
+        focusRoot(focusedRoot === id ? null : id);
       } else {
-        focusBubble(id);
+        // Child click — focus parent if needed, then select child
+        if (focusedRoot !== bubble.parentId) {
+          focusRoot(bubble.parentId ?? null);
+        }
+        setSelectedChild(prev => prev === id ? null : id);
       }
     }
-    
-    draggingBubbleId.current = null;
+
+    dragging.current = null;
   };
 
+  // ── Render ───────────────────────────────────────────────────────────────
+
   return (
-    <div 
+    <div
       ref={containerRef}
       className="w-screen h-screen overflow-hidden touch-none"
-      onPointerDown={handleContainerPointerDown}
-      onPointerMove={handleContainerPointerMove}
-      onPointerUp={handleContainerPointerUp}
-      onPointerCancel={handleContainerPointerUp}
-      onPointerLeave={handleContainerPointerUp}
+      style={{ background: 'linear-gradient(145deg, #fafafa 0%, #f5f5f7 100%)' }}
+      onPointerDown={onContainerPointerDown}
+      onPointerMove={onContainerPointerMove}
+      onPointerUp={onContainerPointerUp}
+      onPointerCancel={onContainerPointerUp}
+      onPointerLeave={onContainerPointerUp}
     >
-      <motion.div 
+      <motion.div
         className="absolute top-0 left-0 origin-top-left"
         style={{ x: cameraX, y: cameraY, scale: cameraScale }}
       >
         {bubbles.map(bubble => {
-          const size = bubble.type === 'root' ? 160 : 90;
-          
-          let isMuted = false;
-          if (focusedBubble) {
-            if (bubble.id === focusedBubble) {
-              isMuted = false;
-            } else if (bubble.parentId === focusedBubble) {
-              isMuted = false;
-            } else {
-              isMuted = true;
+          const size = getBubbleSize(bubble, bubbles);
+          const isRoot = bubble.type === 'root';
+          const isSelected = bubble.id === selectedChild;
+          const isFocusedRoot = bubble.id === focusedRoot;
+
+          // Visibility rules when inside a root universe
+          let muted = false;
+          if (focusedRoot) {
+            if (isRoot && bubble.id !== focusedRoot) {
+              muted = true;
+            } else if (!isRoot && bubble.parentId !== focusedRoot) {
+              muted = true;
+            } else if (selectedChild && !isRoot && !isSelected && bubble.id !== focusedRoot) {
+              // Inside child focus, other siblings step back slightly
+              muted = false; // keep visible but dim handled below
             }
           }
+
+          // Siblings dim when a child is selected (not fully muted)
+          const siblingDimmed =
+            !!selectedChild &&
+            !isRoot &&
+            bubble.parentId === focusedRoot &&
+            bubble.id !== selectedChild;
+
+          const opacity = muted ? 0.12 : siblingDimmed ? 0.45 : 1;
+          const blur = muted ? '6px' : 'none';
+          const scale = isSelected ? 1.1 : isFocusedRoot ? 1.0 : 1;
 
           return (
             <motion.div
               key={bubble.id}
-              className={`absolute top-0 left-0 rounded-full ${isMuted ? 'pointer-events-none' : 'cursor-grab active:cursor-grabbing'}`}
-              style={{ 
-                x: bubble.x - size / 2, 
+              className={`absolute top-0 left-0 rounded-full ${muted ? 'pointer-events-none' : 'cursor-grab active:cursor-grabbing'}`}
+              style={{
+                x: bubble.x - size / 2,
                 y: bubble.y - size / 2,
                 width: size,
                 height: size,
-                touchAction: 'none'
+                touchAction: 'none',
               }}
               initial={false}
-              animate={{
-                opacity: isMuted ? 0.15 : 1,
-                filter: isMuted ? 'blur(6px) brightness(1)' : 'blur(0px) brightness(1)',
-                scale: 1,
-              }}
-              whileHover={!isMuted ? { scale: 1.04, filter: 'blur(0px) brightness(1.08)' } : undefined}
-              transition={{ type: 'spring', stiffness: 60, damping: 15 }}
-              onPointerDown={(e) => handleBubblePointerDown(e, bubble.id)}
-              onPointerMove={handleBubblePointerMove}
-              onPointerUp={(e) => handleBubblePointerUp(e, bubble.id)}
-              onPointerCancel={(e) => handleBubblePointerUp(e, bubble.id)}
+              animate={{ opacity, filter: `blur(${blur})`, scale }}
+              whileHover={!muted ? { scale: isSelected ? 1.1 : 1.04, filter: 'blur(0px) brightness(1.06)' } : undefined}
+              transition={{ type: 'spring', stiffness: 55, damping: 16 }}
+              onPointerDown={e => onBubblePointerDown(e, bubble.id)}
+              onPointerMove={onBubblePointerMove}
+              onPointerUp={e => onBubblePointerUp(e, bubble.id)}
+              onPointerCancel={e => onBubblePointerUp(e, bubble.id)}
             >
               <GlassBubbleSVG size={size} color={bubble.color} label={bubble.label} />
+
+              {/* Content pills — only for selected child bubble */}
+              {isSelected && bubble.content.length > 0 && (
+                <ContentPills
+                  items={bubble.content}
+                  bubbleSize={size}
+                  color={bubble.color}
+                />
+              )}
             </motion.div>
           );
         })}
       </motion.div>
+
+      {/* Subtle hint — fades out once user interacts */}
+      {!focusedRoot && (
+        <motion.p
+          className="absolute bottom-8 left-1/2 -translate-x-1/2 text-gray-400 font-light text-xs tracking-widest pointer-events-none select-none"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 0.5 }}
+          transition={{ delay: 1.2, duration: 1.5 }}
+        >
+          click to enter
+        </motion.p>
+      )}
     </div>
   );
 }
