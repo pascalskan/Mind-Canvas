@@ -1,6 +1,6 @@
-# [Project name]
+# Mind Canvas
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A purely visual prototype of a personal infinite canvas — glass bubbles floating in space, each representing something occupying mental space in your life.
 
 ## Run & Operate
 

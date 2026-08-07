@@ -1,0 +1,22 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&display=swap');
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@plugin "@tailwindcss/typography";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: 'Inter', sans-serif;
+}
+
+body {
+  @apply font-sans antialiased text-gray-900;
+  background: radial-gradient(circle at 50% 0%, #FAFAFA 0%, #F5F5F7 100%);
+  margin: 0;
+  overflow: hidden;
+}
+
+/* Hide scrollbars for the infinite canvas feel */
+::-webkit-scrollbar {
+  display: none;
+}

@@ -1,0 +1,204 @@
+I want to build the very first prototype of a personal application. This is NOT a productivity app. It is NOT a to-do list.
+
+Its purpose is purely to help me visualise my mind.
+
+This first version is purely for experimenting with the design and feel of the application. Prioritise visual polish and interaction over functionality.
+
+Goal
+
+Create a modern web application with an infinite canvas.
+
+The canvas represents my mind.
+
+Everything on the canvas is represented by floating bubbles.
+
+Each bubble represents something occupying mental space in my life.
+
+Examples include:
+
+Career
+Personal
+SSS
+
+These are simply examples.
+
+The system should support any number of bubbles.
+
+Visual Style
+
+The application should feel:
+
+Calm
+Minimal
+Organic
+Premium
+Peaceful
+
+Avoid making it feel like software.
+
+Instead it should feel like you're exploring a living mental landscape.
+
+Use inspiration from:
+
+Apple
+Linear
+Arc Browser
+Nothing OS
+Calm app
+
+Minimal UI.
+
+No unnecessary buttons.
+
+Lots of whitespace.
+
+Background
+
+Use a clean, almost white background.
+
+Very subtle gradient.
+
+No visible grid.
+
+No borders.
+
+No panels.
+
+The canvas should feel infinite.
+
+Users should be able to pan around by dragging.
+
+Zoom with mouse wheel.
+
+Bubbles
+
+Every bubble should be:
+
+perfectly circular
+translucent
+soft
+glossy
+subtle glass appearance
+slightly reflective
+gentle highlight (glisten)
+no border
+no shadow
+
+Do NOT make them cartoonish.
+
+Think elegant soap bubbles.
+
+Motion
+
+The bubbles should NOT drift.
+
+They remain perfectly still.
+
+Only move when the user drags them.
+
+Movement should feel extremely smooth.
+
+Physics should feel soft.
+
+No snapping.
+
+Initial Layout
+
+Generate three example root bubbles.
+
+Career
+
+Personal
+
+SSS
+
+Place them naturally apart from each other.
+
+Around each one generate a few smaller example bubbles like:
+
+Career
+
+Visionary
+New Project
+Learning
+
+Personal
+
+Fitness
+Reading
+Family
+
+SSS
+
+Event
+Planning
+Marketing
+
+These are placeholder examples only.
+
+Interactions
+
+Allow:
+
+drag bubbles
+pan canvas
+zoom canvas
+
+When clicking a bubble:
+
+Smoothly animate into it.
+
+The selected bubble should become large and central.
+
+Its child bubbles should become visible around it.
+
+Everything else should softly fade into the background.
+
+No sidebars.
+
+No popups.
+
+The feeling should be like entering a little universe.
+
+Animations
+
+Every animation should use easing.
+
+No abrupt transitions.
+
+Think Apple-quality movement.
+
+Slow enough to feel elegant.
+
+Fast enough to remain responsive.
+
+Ignore functionality
+
+For now DO NOT build:
+
+AI
+Saving
+Databases
+Notes
+Authentication
+Accounts
+Collaboration
+Tasks
+Progress tracking
+
+Fake all data.
+
+The purpose is simply to create a visual prototype that we can interact with and iterate on.
+
+Technical Requirements
+
+Use:
+
+React
+TypeScript
+Tailwind CSS
+Framer Motion for animations
+
+Structure the code cleanly.
+
+Make it easy to iterate on later.

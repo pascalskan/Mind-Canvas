@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Mind Canvas"
+description = "A purely visual prototype of a personal mind-mapping canvas. Users see floating glass bubbles representing mental spaces (Career, Personal, SSS, etc.) on an infinite canvas. They can pan, zoom, drag bubbles, and click into a bubble to enter its little universe. No backend — all data is hardcoded. The purpose is to experiment with the design and feel."
+version = "1.0.0"
+id = "artifacts/mind-canvas"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 22107
+
+[services.development]
+run = "pnpm --filter @workspace/mind-canvas run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/mind-canvas", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/mind-canvas/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "22107"
+BASE_PATH = "/"
