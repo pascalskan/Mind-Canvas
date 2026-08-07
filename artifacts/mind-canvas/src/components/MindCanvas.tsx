@@ -353,6 +353,9 @@ export default function MindCanvas() {
     });
   };
 
+  // Maximum distance a child bubble can be dragged from its parent's center
+  const MAX_CHILD_LEASH = 260;
+
   const onBubbleMove = (e: React.PointerEvent) => {
     if (!dragging.current) return;
     const dx = e.clientX - dragOrigin.current.mx;
@@ -363,14 +366,39 @@ export default function MindCanvas() {
     const sdy = dy / s;
     const id = dragging.current;
 
-    setBubbles(prev => prev.map(b => {
-      // The dragged bubble itself
-      if (b.id === id) return { ...b, x: dragOrigin.current.bx + sdx, y: dragOrigin.current.by + sdy };
-      // Children of a dragged root move by the same delta (family gravity)
-      const co = dragOrigin.current.childOrigins[b.id];
-      if (co) return { ...b, x: co.x + sdx, y: co.y + sdy };
-      return b;
-    }));
+    setBubbles(prev => {
+      const dragged = prev.find(b => b.id === id);
+
+      return prev.map(b => {
+        // The dragged bubble itself
+        if (b.id === id) {
+          let newX = dragOrigin.current.bx + sdx;
+          let newY = dragOrigin.current.by + sdy;
+
+          // Constrain child bubbles — they can't leave their parent's orbit
+          if (dragged?.type === 'child' && dragged.parentId) {
+            const parent = prev.find(p => p.id === dragged.parentId);
+            if (parent) {
+              const distX = newX - parent.x;
+              const distY = newY - parent.y;
+              const dist  = Math.hypot(distX, distY);
+              if (dist > MAX_CHILD_LEASH) {
+                const ratio = MAX_CHILD_LEASH / dist;
+                newX = parent.x + distX * ratio;
+                newY = parent.y + distY * ratio;
+              }
+            }
+          }
+
+          return { ...b, x: newX, y: newY };
+        }
+
+        // Children of a dragged root move by the same delta (family gravity)
+        const co = dragOrigin.current.childOrigins[b.id];
+        if (co) return { ...b, x: co.x + sdx, y: co.y + sdy };
+        return b;
+      });
+    });
   };
 
   const onBubbleUp = (e: React.PointerEvent, id: string) => {
