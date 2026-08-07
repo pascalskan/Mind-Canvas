@@ -430,7 +430,7 @@ export default function MindCanvas() {
             bubble.id !== selectedChild;
 
           const opacity = muted ? 0.11 : siblingDimmed ? 0.42 : 1;
-          const blur    = muted ? '6px' : 'none';
+          const blur    = muted ? '6px' : '0px';
           const scale   = isSelected ? 1.1 : 1;
 
           // Micro-orbs visible whenever the child is not muted and not selected
