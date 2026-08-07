@@ -22,7 +22,7 @@ const GAP       = 9;   // minimum breathing room between any two bubbles
 // Purely depth-driven so a parent is ALWAYS visibly larger than its children,
 // no matter how many descendants it holds.
 
-const DEPTH_SIZE = [320, 158, 76, 58, 48, 42, 38, 35, 33, 31, 29];
+const DEPTH_SIZE = [320, 166, 20, 58, 48, 42, 38, 35, 33, 31, 29];
 
 function sizeForDepth(depth: number): number {
   return DEPTH_SIZE[Math.min(depth, DEPTH_SIZE.length - 1)];
@@ -49,6 +49,12 @@ function isInThreeLayerView(bubble: BubbleData, focusedId: string | null, byId: 
   return layer >= 0 && layer <= 2;
 }
 
+function displaySize(bubble: BubbleData, focusedId: string | null, byId: Record<string, BubbleData>) {
+  const layer = relativeLayer(bubble.id, focusedId, byId);
+  if (!focusedId) return getSize(bubble);
+  return [250, 132, 16][layer] ?? getSize(bubble);
+}
+
 // How far a child may roam from its parent, beyond the touching distance.
 function spreadForParentDepth(depth: number): number {
   return Math.max(60, 240 * Math.pow(0.7, depth));
@@ -57,6 +63,18 @@ function spreadForParentDepth(depth: number): number {
 // ─── Seed tree ────────────────────────────────────────────────────────────────
 
 interface SeedNode { label: string; children?: SeedNode[] }
+
+function deepTestBranch(level = 1): SeedNode {
+  if (level > MAX_DEPTH) return { label: 'Test leaf' };
+  return {
+    label: level === 1 ? 'Depth Test' : `Level ${level}`,
+    children: Array.from({ length: 4 }, (_, index) => (
+      index === 0 && level < MAX_DEPTH
+        ? deepTestBranch(level + 1)
+        : { label: `L${level} · ${index + 1}` }
+    )),
+  };
+}
 
 const SEED: { label: string; color: string; children: SeedNode[] }[] = [
   {
@@ -89,6 +107,7 @@ const SEED: { label: string; color: string; children: SeedNode[] }[] = [
   {
     label: 'SSS', color: 'hsl(170,40%,55%)',
     children: [
+      deepTestBranch(),
       { label: 'Event',     children: [{ label: 'Venue' }, { label: 'Speakers' }, { label: 'Catering' }, { label: 'Guest list' }] },
       { label: 'Planning',  children: [{ label: 'Q3 roadmap' }, { label: 'Budget' }, { label: 'Team' }] },
       { label: 'Marketing', children: [{ label: 'Brand refresh' }, { label: 'Social' }, { label: 'Partnerships' }] },
@@ -310,9 +329,9 @@ function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="absolute inset-0 pointer-events-none overflow-visible">
         <defs>
           <radialGradient id={`bg-${uid}`} cx="30%" cy="30%" r="70%">
-            <stop offset="0%"   stopColor={color} stopOpacity=".07"/>
-            <stop offset="65%"  stopColor={color} stopOpacity=".14"/>
-            <stop offset="100%" stopColor={color} stopOpacity=".38"/>
+            <stop offset="0%"   stopColor="#ffffff" stopOpacity=".92"/>
+            <stop offset="42%"  stopColor={color} stopOpacity=".88"/>
+            <stop offset="100%" stopColor={color} stopOpacity="1"/>
           </radialGradient>
           <radialGradient id={`rim-${uid}`} cx="50%" cy="50%" r="50%">
             <stop offset="83%"  stopColor="#fff" stopOpacity="0"/>
@@ -325,7 +344,7 @@ function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange
             <stop offset="100%" stopColor="#fff" stopOpacity="0"/>
           </radialGradient>
           <radialGradient id={`glow-${uid}`} cx="50%" cy="50%" r="50%">
-            <stop offset="0%"   stopColor={color} stopOpacity=".5"/>
+            <stop offset="0%"   stopColor={color} stopOpacity=".72"/>
             <stop offset="100%" stopColor={color} stopOpacity="0"/>
           </radialGradient>
         </defs>
@@ -426,6 +445,69 @@ function CoordinateField() {
         <animate attributeName="opacity" values=".6;.9;.6" dur="11s" repeatCount="indefinite" />
       </circle>
     </svg>
+  );
+}
+
+const PILLAR_COLORS = [
+  'hsl(250,60%,58%)', 'hsl(340,64%,60%)', 'hsl(170,48%,46%)',
+  'hsl(40,72%,55%)', 'hsl(205,62%,55%)', 'hsl(290,54%,60%)',
+  'hsl(8,68%,57%)', 'hsl(120,42%,48%)',
+];
+
+function hslParts(color: string) {
+  const match = color.match(/hsl\(([\d.]+),\s*([\d.]+)%,\s*([\d.]+)%\)/);
+  return match ? match.slice(1).map(Number) : [0, 0, 0];
+}
+
+function colorsAreClose(first: string, second: string) {
+  const [h1, s1, l1] = hslParts(first);
+  const [h2, s2, l2] = hslParts(second);
+  const hueGap = Math.min(Math.abs(h1 - h2), 360 - Math.abs(h1 - h2));
+  return hueGap < 24 && Math.abs(s1 - s2) < 22 && Math.abs(l1 - l2) < 20;
+}
+
+function PillarColorPicker({ color, existingColors, onChoose }: {
+  color: string;
+  existingColors: string[];
+  onChoose: (color: string) => void;
+}) {
+  const [pending, setPending] = useState<string | null>(null);
+  const choose = (next: string) => {
+    if (existingColors.some(used => colorsAreClose(used, next))) setPending(next);
+    else onChoose(next);
+  };
+
+  return (
+    <div className="absolute pointer-events-auto z-50"
+      style={{ top: 'calc(100% + 15px)', left: '50%', transform: 'translateX(-50%)', width: 220 }}
+      onPointerDown={e => e.stopPropagation()}>
+      <div className="p-3.5"
+        style={{ background: 'rgba(255,255,255,.94)', backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)', borderRadius: 15, boxShadow: '0 8px 30px rgba(0,0,0,.12), inset 0 0 0 1px rgba(255,255,255,.95)' }}>
+        {pending ? (
+          <>
+            <p className="text-xs leading-relaxed font-light text-gray-500">
+              This color is very close to an existing pillar. Use it anyway?
+            </p>
+            <div className="flex gap-2 justify-end mt-3">
+              <button className="text-xs text-gray-400 px-2 py-1" onClick={() => setPending(null)}>Change</button>
+              <button className="text-xs text-white rounded-full px-3 py-1" style={{ background: pending }}
+                onClick={() => { onChoose(pending); setPending(null); }}>Use anyway</button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="text-[10px] uppercase tracking-widest font-light text-gray-400 mb-2.5">Pillar color</p>
+            <div className="grid grid-cols-4 gap-2">
+              {PILLAR_COLORS.map(option => (
+                <button key={option} aria-label={`Choose ${option}`} onClick={() => choose(option)}
+                  className="rounded-full transition-transform hover:scale-110"
+                  style={{ width: 34, height: 34, background: option, boxShadow: color === option ? '0 0 0 3px #fff, 0 0 0 5px rgba(90,90,100,.4)' : 'inset 0 1px 2px rgba(255,255,255,.5)' }} />
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -592,6 +674,7 @@ export default function MindCanvas() {
   const [preEditBubbles, setPreEditBubbles] = useState<BubbleData[] | null>(null);
   const [editSelection,  setEditSelection]  = useState<string | null>(null);
   const [quickCreate,    setQuickCreate]    = useState<{ id: string; parentId: string; anchor: { x: number; y: number } } | null>(null);
+  const [showColorPicker, setShowColorPicker] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const cameraX = useMotionValue(typeof window !== 'undefined' ? window.innerWidth  / 2 : 640);
@@ -632,6 +715,7 @@ export default function MindCanvas() {
         .filter(b => isInThreeLayerView(b, focusedIdRef.current, allMap))
         .sort((a, b) => a.depth - b.depth);
       const map  = Object.fromEntries(list.map(b => [b.id, b]));
+      const localSize = (b: BubbleData) => displaySize(b, focusedIdRef.current, allMap);
 
       // 1 — base positions: home + own drift + inherited parent drift
       const drift: Record<string, { x: number; y: number }> = {};
@@ -659,7 +743,7 @@ export default function MindCanvas() {
       }
 
       // 2 — push everything apart until nothing overlaps
-      resolveCollisions(list, map, pos, draggingRef.current);
+      resolveCollisions(list, map, pos, draggingRef.current, 4, localSize);
 
       setPositions(pos);
     };
@@ -733,6 +817,7 @@ export default function MindCanvas() {
     setFocusedId(null);
     setEditingId(null);
     setEditSelection(null);
+    setShowColorPicker(false);
     fitAll();
   }, [fitAll]);
 
@@ -741,6 +826,7 @@ export default function MindCanvas() {
     setEditMode(false);
     setEditingId(null);
     setEditSelection(null);
+    setShowColorPicker(false);
   }, []);
 
   const cancelEditMode = useCallback(() => {
@@ -749,6 +835,7 @@ export default function MindCanvas() {
     setEditMode(false);
     setEditingId(null);
     setEditSelection(null);
+    setShowColorPicker(false);
   }, [preEditBubbles]);
 
   // ── Step out one level ───────────────────────────────────────────────────
@@ -789,7 +876,7 @@ export default function MindCanvas() {
     lastPan.current = { x: e.clientX, y: e.clientY };
     e.currentTarget.setPointerCapture(e.pointerId);
     if (editingId) { setEditingId(null); return; }
-    if (editMode && editSelection) { setEditSelection(null); return; }
+    if (editMode && editSelection) { setEditSelection(null); setShowColorPicker(false); return; }
     if (focusedId) { stepOut(); }
   };
   const onContainerMove = (e: React.PointerEvent) => {
