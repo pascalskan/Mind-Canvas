@@ -22,13 +22,31 @@ const GAP       = 9;   // minimum breathing room between any two bubbles
 // Purely depth-driven so a parent is ALWAYS visibly larger than its children,
 // no matter how many descendants it holds.
 
-const DEPTH_SIZE = [320, 168, 108, 78, 62, 54, 48, 44, 41, 38, 36];
+const DEPTH_SIZE = [320, 158, 76, 58, 48, 42, 38, 35, 33, 31, 29];
 
 function sizeForDepth(depth: number): number {
   return DEPTH_SIZE[Math.min(depth, DEPTH_SIZE.length - 1)];
 }
 function getSize(b: BubbleData): number {
   return sizeForDepth(b.depth);
+}
+
+function relativeLayer(id: string, focusedId: string | null, byId: Record<string, BubbleData>): number {
+  if (!focusedId) return byId[id]?.depth ?? 0;
+  if (id === focusedId) return 0;
+  let current = byId[id];
+  let distance = 0;
+  while (current?.parentId) {
+    distance += 1;
+    if (current.parentId === focusedId) return distance;
+    current = byId[current.parentId];
+  }
+  return -1;
+}
+
+function isInThreeLayerView(bubble: BubbleData, focusedId: string | null, byId: Record<string, BubbleData>) {
+  const layer = relativeLayer(bubble.id, focusedId, byId);
+  return layer >= 0 && layer <= 2;
 }
 
 // How far a child may roam from its parent, beyond the touching distance.
@@ -413,13 +431,18 @@ function CoordinateField() {
 
 // ─── Add Panel — drill down the full tree, any depth ──────────────────────────
 
-function AddPanel({ bubbles, onAdd, onClose }: {
+function AddPanel({ bubbles, onAdd, onClose, initialParentPath = [], quickCreate, anchor, onQuickSave, onQuickCancel }: {
   bubbles: BubbleData[];
   onAdd: (label: string, parentId: string | null) => void;
   onClose: () => void;
+  initialParentPath?: string[];
+  quickCreate?: { id: string };
+  anchor?: { x: number; y: number };
+  onQuickSave?: (id: string, label: string) => void;
+  onQuickCancel?: () => void;
 }) {
   const [label, setLabel]           = useState('');
-  const [parentPath, setParentPath] = useState<string[]>([]);
+  const [parentPath, setParentPath] = useState<string[]>(initialParentPath);
 
   const byId  = useMemo(() => Object.fromEntries(bubbles.map(b => [b.id, b])), [bubbles]);
   const roots = bubbles.filter(b => b.depth === 0);
@@ -448,7 +471,17 @@ function AddPanel({ bubbles, onAdd, onClose }: {
   const submit = () => {
     const t = label.trim();
     if (!t || atMax) return;
+    if (quickCreate) {
+      onQuickSave?.(quickCreate.id, t);
+      onClose();
+      return;
+    }
     onAdd(t, parentId);
+    onClose();
+  };
+
+  const cancel = () => {
+    if (quickCreate) onQuickCancel?.();
     onClose();
   };
 
@@ -466,18 +499,25 @@ function AddPanel({ bubbles, onAdd, onClose }: {
     <motion.div
       initial={{ opacity: 0, y: 12, scale: .95 }} animate={{ opacity: 1, y: 0, scale: 1 }}
       transition={{ type: 'spring', stiffness: 260, damping: 22 }}
-      className="absolute bottom-20 right-6 z-50 pointer-events-auto"
-      style={{ width: 292 }} onPointerDown={e => e.stopPropagation()}>
+      className="absolute z-50 pointer-events-auto"
+      style={anchor ? {
+        width: 292,
+        left: Math.max(16, Math.min(anchor.x + 44, window.innerWidth - 308)),
+        top: Math.max(16, Math.min(anchor.y - 120, window.innerHeight - 290)),
+      } : { width: 292, bottom: 80, right: 24 }}
+      onPointerDown={e => e.stopPropagation()}>
       <div className="p-5"
         style={{ background: 'rgba(255,255,255,.88)', backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)', borderRadius: 18, boxShadow: '0 8px 40px rgba(0,0,0,.08),inset 0 0 0 1px rgba(255,255,255,.9)' }}>
 
-        <p className="text-xs font-light text-gray-400 tracking-widest mb-3 uppercase">New bubble</p>
+        <p className="text-xs font-light text-gray-400 tracking-widest mb-3 uppercase">
+          {quickCreate ? 'Name new bubble' : 'New bubble'}
+        </p>
 
         <input autoFocus placeholder="Label…" value={label} onChange={e => setLabel(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') onClose(); }}
           className="w-full bg-transparent border-b border-gray-200 text-gray-700 font-light text-sm outline-none pb-1 mb-4 placeholder-gray-300"/>
 
-        <div className="max-h-72 overflow-y-auto pr-1 -mr-1">
+        {!quickCreate && <div className="max-h-72 overflow-y-auto pr-1 -mr-1">
           <p className="text-xs text-gray-400 font-light mb-2">Add to</p>
           <div className="flex flex-col gap-1.5 mb-3">
             <Row text="New root bubble" selected={parentPath.length === 0} onSelect={() => setParentPath([])}/>
@@ -498,10 +538,14 @@ function AddPanel({ bubbles, onAdd, onClose }: {
               </div>
             </div>
           ))}
-        </div>
+        </div>}
 
         <div className="mt-3 mb-3">
-          {atMax ? (
+          {quickCreate ? (
+            <p className="text-xs text-gray-300 font-light">
+              → child of <span className="text-gray-500">{parent?.label}</span> · level {(parent?.depth ?? 0) + 1}
+            </p>
+          ) : atMax ? (
             <p className="text-xs font-light" style={{ color: 'hsl(0,45%,58%)' }}>
               {parent?.label} is at the maximum depth of {MAX_DEPTH}.
             </p>
@@ -515,7 +559,7 @@ function AddPanel({ bubbles, onAdd, onClose }: {
         </div>
 
         <div className="flex gap-2 justify-end">
-          <button onClick={onClose} className="text-xs font-light text-gray-400 hover:text-gray-600 transition-colors px-3 py-1.5">Cancel</button>
+          <button onClick={cancel} className="text-xs font-light text-gray-400 hover:text-gray-600 transition-colors px-3 py-1.5">Cancel</button>
           <button onClick={submit} disabled={!label.trim() || atMax}
             className="text-xs font-light text-white px-4 py-1.5 rounded-full transition-opacity disabled:opacity-30"
             style={{ background: 'rgba(100,100,120,.7)' }}>
@@ -546,6 +590,8 @@ export default function MindCanvas() {
   const [showAddPanel,   setShowAddPanel]   = useState(false);
   const [editMode,       setEditMode]       = useState(false);
   const [preEditBubbles, setPreEditBubbles] = useState<BubbleData[] | null>(null);
+  const [editSelection,  setEditSelection]  = useState<string | null>(null);
+  const [quickCreate,    setQuickCreate]    = useState<{ id: string; parentId: string; anchor: { x: number; y: number } } | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const cameraX = useMotionValue(typeof window !== 'undefined' ? window.innerWidth  / 2 : 640);
@@ -558,9 +604,11 @@ export default function MindCanvas() {
 
   const bubblesRef  = useRef<BubbleData[]>(INITIAL_BUBBLES);
   const editModeRef = useRef(false);
+  const focusedIdRef = useRef<string | null>(null);
   const draggingRef = useRef<string | null>(null);
   bubblesRef.current  = bubbles;
   editModeRef.current = editMode;
+  focusedIdRef.current = focusedId;
 
   // ── Float + collision resolution ─────────────────────────────────────────
 
@@ -576,7 +624,13 @@ export default function MindCanvas() {
 
       const t    = (now - t0) / 1000;
       const em   = editModeRef.current;
-      const list = [...bubblesRef.current].sort((a, b) => a.depth - b.depth);
+      const all = bubblesRef.current;
+      const allMap = Object.fromEntries(all.map(b => [b.id, b]));
+      // Only the visible three-layer window participates in collision solving.
+      // Hidden descendants must never push the visible bubbles around.
+      const list = all
+        .filter(b => isInThreeLayerView(b, focusedIdRef.current, allMap))
+        .sort((a, b) => a.depth - b.depth);
       const map  = Object.fromEntries(list.map(b => [b.id, b]));
 
       // 1 — base positions: home + own drift + inherited parent drift
@@ -639,11 +693,15 @@ export default function MindCanvas() {
   // Interactive: at overview only roots; when focused, the focused bubble,
   // its whole subtree, and its ancestors (so you can step back out).
   const interactiveIds = useMemo(() => {
-    if (editMode) return new Set(bubbles.map(b => b.id));
-    if (!focusedId) return new Set(bubbles.filter(b => b.depth === 0).map(b => b.id));
-    const ids = new Set<string>([focusedId, ...descendantsOf(focusedId), ...ancestorsOf(focusedId)]);
+    const ids = new Set<string>();
+    for (const b of bubbles) {
+      const layer = relativeLayer(b.id, focusedId, byId);
+      // The selected/current layer and its direct children are actionable.
+      // Layer 3 is intentionally visual-only, including in edit mode.
+      if (layer >= 0 && layer <= 1) ids.add(b.id);
+    }
     return ids;
-  }, [focusedId, bubbles, editMode, descendantsOf, ancestorsOf]);
+  }, [focusedId, bubbles, byId]);
 
   // ── Camera helpers ───────────────────────────────────────────────────────
 
@@ -655,9 +713,8 @@ export default function MindCanvas() {
   const focusBubble = useCallback((id: string | null) => {
     setFocusedId(id);
     if (!id) { fitAll(); return; }
-    const kids  = bubblesRef.current.filter(b => b.parentId === id);
-    const self  = bubblesRef.current.find(b => b.id === id);
-    const group = self ? [self, ...kids] : kids;
+    const currentMap = Object.fromEntries(bubblesRef.current.map(b => [b.id, b]));
+    const group = bubblesRef.current.filter(b => isInThreeLayerView(b, id, currentMap));
     fitBubbles(group, cameraX, cameraY, cameraScale, { maxScale: 2.2, padding: 110, spring: true });
   }, [cameraX, cameraY, cameraScale, fitAll]);
 
@@ -675,6 +732,7 @@ export default function MindCanvas() {
     setEditMode(true);
     setFocusedId(null);
     setEditingId(null);
+    setEditSelection(null);
     fitAll();
   }, [fitAll]);
 
@@ -682,6 +740,7 @@ export default function MindCanvas() {
     setPreEditBubbles(null);
     setEditMode(false);
     setEditingId(null);
+    setEditSelection(null);
   }, []);
 
   const cancelEditMode = useCallback(() => {
@@ -689,6 +748,7 @@ export default function MindCanvas() {
     setPreEditBubbles(null);
     setEditMode(false);
     setEditingId(null);
+    setEditSelection(null);
   }, [preEditBubbles]);
 
   // ── Step out one level ───────────────────────────────────────────────────
@@ -719,11 +779,17 @@ export default function MindCanvas() {
   const lastPan   = useRef({ x: 0, y: 0 });
 
   const onContainerDown = (e: React.PointerEvent) => {
+    if (quickCreate) {
+      setBubbles(prev => prev.filter(b => b.id !== quickCreate.id));
+      setQuickCreate(null);
+      return;
+    }
     if (showAddPanel) { setShowAddPanel(false); return; }
     isPanning.current = true;
     lastPan.current = { x: e.clientX, y: e.clientY };
     e.currentTarget.setPointerCapture(e.pointerId);
     if (editingId) { setEditingId(null); return; }
+    if (editMode && editSelection) { setEditSelection(null); return; }
     if (focusedId) { stepOut(); }
   };
   const onContainerMove = (e: React.PointerEvent) => {
@@ -821,14 +887,34 @@ export default function MindCanvas() {
     if (isClick) {
       if (editModeRef.current) {
         const b = bubblesRef.current.find(x => x.id === id);
-        if (b && editingId !== id) { setEditingId(id); setEditValue(b.label); }
+        if (b) {
+          setEditSelection(id);
+          setEditingId(id);
+          setEditValue(b.label);
+        }
       } else {
         const now = Date.now();
         const wasRecent = now - (lastClick.current[id] ?? 0) < 320;
         lastClick.current[id] = now;
         const b = bubblesRef.current.find(x => x.id === id);
         if (b) {
-          if (wasRecent) { setEditingId(id); setEditValue(b.label); }
+          if (wasRecent && b.depth < MAX_DEPTH) {
+            const parent = b;
+            const depth = parent.depth + 1;
+            const siblings = bubblesRef.current.filter(item => item.parentId === parent.id);
+            const R = ringRadius(getSize(parent) / 2, sizeForDepth(depth) / 2, siblings.length + 1);
+            const angle = siblings.length
+              ? Math.atan2(parent.y - (byId[parent.parentId ?? '']?.y ?? parent.y), parent.x - (byId[parent.parentId ?? '']?.x ?? parent.x)) + Math.PI / 2
+              : -Math.PI / 2;
+            const newId = `n${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
+            setBubbles(prev => [...prev, {
+              id: newId, parentId: parent.id, depth, label: 'New bubble',
+              x: parent.x + Math.cos(angle) * R,
+              y: parent.y + Math.sin(angle) * R,
+              color: parent.color,
+            }]);
+            setQuickCreate({ id: newId, parentId: parent.id, anchor: { x: e.clientX, y: e.clientY } });
+          }
           else           { focusBubble(focusedId === id ? (b.parentId ?? null) : id); }
         }
       }
@@ -841,6 +927,17 @@ export default function MindCanvas() {
   const handleEditSave = (id: string) => {
     setBubbles(prev => prev.map(b => b.id === id ? { ...b, label: editValue.trim() || b.label } : b));
     setEditingId(null);
+  };
+
+  const saveQuickCreate = (id: string, label: string) => {
+    setBubbles(prev => prev.map(b => b.id === id ? { ...b, label } : b));
+    setQuickCreate(null);
+  };
+
+  const cancelQuickCreate = () => {
+    if (!quickCreate) return;
+    setBubbles(prev => prev.filter(b => b.id !== quickCreate.id));
+    setQuickCreate(null);
   };
 
   // ── Add bubble ───────────────────────────────────────────────────────────
@@ -907,11 +1004,6 @@ export default function MindCanvas() {
 
   // ── Render ───────────────────────────────────────────────────────────────
 
-  const focusedSubtree = useMemo(
-    () => (focusedId ? new Set([focusedId, ...descendantsOf(focusedId)]) : null),
-    [focusedId, descendantsOf],
-  );
-
   const pillBase: React.CSSProperties = {
     background: 'rgba(255,255,255,.84)',
     backdropFilter: 'blur(16px)',
@@ -941,7 +1033,7 @@ export default function MindCanvas() {
         <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
           className="absolute top-5 left-1/2 -translate-x-1/2 z-50 pointer-events-none select-none"
           style={{ background: 'rgba(255,255,255,.84)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 20, padding: '6px 18px', boxShadow: '0 2px 16px rgba(0,0,0,.06),inset 0 0 0 1px rgba(130,110,180,.25)', fontSize: 12, color: 'hsl(260,40%,50%)', letterSpacing: '.04em', fontWeight: 300 }}>
-          Edit mode · click any bubble to rename · hover for delete
+          Edit mode · select a bubble to lock it · click its name to rename · × deletes
         </motion.div>
       )}
 
@@ -965,21 +1057,21 @@ export default function MindCanvas() {
 
         <CoordinateField />
 
-        {bubbles.map(bubble => {
-          const size  = getSize(bubble);
+        {bubbles.filter(b => isInThreeLayerView(b, focusedId, byId)).map(bubble => {
+          const layer = relativeLayer(bubble.id, focusedId, byId);
+          // At overview, retained absolute sizing gives roots their landmark role.
+          // Once inside a bubble, the three visible layers are sized locally.
+          const size = focusedId ? [250, 128, 42][layer] : getSize(bubble);
           const p     = positions[bubble.id] ?? { x: bubble.x, y: bubble.y };
           const interactive = interactiveIds.has(bubble.id);
-
-          // Muted: outside the focused subtree and not an ancestor of it
-          let muted = false;
-          if (focusedSubtree && !editMode) {
-            muted = !focusedSubtree.has(bubble.id) && !ancestorsOf(focusedId).includes(bubble.id);
-          }
+          const visualOnly = layer === 2;
+          const muted = visualOnly;
 
           const isFocused  = bubble.id === focusedId;
           const isHovered  = hoveredBubble === bubble.id;
-          const showDelete = editMode && isHovered && bubble.id !== editingId;
-          const opacity    = muted ? .10 : 1;
+          const isEditSelected = editMode && editSelection === bubble.id;
+          const showDelete = editMode && isEditSelected && bubble.id !== editingId;
+          const opacity    = visualOnly ? .64 : 1;
 
           return (
             <motion.div key={bubble.id}
@@ -997,14 +1089,14 @@ export default function MindCanvas() {
                 zIndex: 100 - bubble.depth,
               }}
               initial={false}
-              animate={{ opacity, scale: isFocused ? 1.04 : 1, filter: muted ? 'blur(5px)' : 'blur(0px)' }}
+              animate={{ opacity, scale: isFocused || isEditSelected ? 1.04 : 1, filter: 'blur(0px)' }}
               whileHover={interactive && !muted && editingId !== bubble.id ? { scale: isFocused ? 1.04 : 1.03, filter: 'blur(0px) brightness(1.05)' } : undefined}
               transition={{ type: 'spring', stiffness: 55, damping: 16 }}
               onPointerDown={e => onBubbleDown(e, bubble.id)}
               onPointerMove={onBubbleMove}
               onPointerUp={e => onBubbleUp(e, bubble.id)}
               onPointerCancel={e => onBubbleUp(e, bubble.id)}
-              onMouseEnter={() => setHoveredBubble(bubble.id)}
+              onMouseEnter={() => !visualOnly && setHoveredBubble(bubble.id)}
               onMouseLeave={() => setHoveredBubble(h => h === bubble.id ? null : h)}
             >
               <GlassBubbleSVG size={size} color={bubble.color} label={bubble.label}
@@ -1029,16 +1121,28 @@ export default function MindCanvas() {
       </motion.div>
 
       {/* Hint */}
-      {!focusedId && !editMode && (
+      {!focusedId && !editMode && !quickCreate && (
         <motion.p className="absolute bottom-8 left-1/2 -translate-x-1/2 text-gray-400 font-light text-xs tracking-widest pointer-events-none select-none"
           initial={{ opacity: 0 }} animate={{ opacity: .4 }} transition={{ delay: 1.5, duration: 1.5 }}>
-          click to enter · double-click to rename
+          click to enter · double-click to create a child
         </motion.p>
       )}
 
       {/* Add panel */}
       {showAddPanel && (
         <AddPanel bubbles={bubbles} onAdd={addBubble} onClose={() => setShowAddPanel(false)}/>
+      )}
+      {quickCreate && (
+        <AddPanel
+          bubbles={bubbles}
+          onAdd={addBubble}
+          onClose={() => setQuickCreate(null)}
+          initialParentPath={[quickCreate.parentId]}
+          quickCreate={{ id: quickCreate.id }}
+          anchor={quickCreate.anchor}
+          onQuickSave={saveQuickCreate}
+          onQuickCancel={cancelQuickCreate}
+        />
       )}
 
       {/* Buttons */}
