@@ -17,13 +17,39 @@ bubble, create child bubbles rather than a list, a tooltip, or an expandable pan
 
 # Size is depth-driven only, never content-driven
 
-Bubble diameter comes from a fixed per-depth table, not from how many children
-it holds.
+Bubble diameter comes from a fixed table, not from how many children it holds.
 
 **Why:** a parent must *always* read as visibly larger than its children. Sizing by
 child count lets a busy child outgrow its parent and destroys the hierarchy.
 
 **How to apply:** never make size a function of descendant count.
+
+# On-screen geometry comes from the RELATIVE layer, never from stored coordinates
+
+Only three layers are ever visible. Both on-screen size and each child's ring radius
+are derived from the relative layer (0 = the bubble you are inside, 1 = its children,
+2 = grandchild dots). Stored `x`/`y` contribute only the *angle* a child sits at;
+its distance is recomputed every frame.
+
+**Why:** stored coordinates were laid out for a bubble's *absolute* depth. A depth-8
+bubble is a ~43px world object but renders at ~132px once you are standing inside it,
+so reusing its stored radius crushes the whole level into an overlapping cluster.
+This was the root cause of "deep levels don't behave like shallow ones" — shallow
+levels looked fine purely because their stored and rendered sizes happened to agree.
+
+**How to apply:** keep ONE layout function that returns positions + a size resolver
+for a given focus target, and drive both the animation loop and the camera fit from
+it. Never let the camera measure stored world coordinates while the renderer draws
+recomputed ones — the camera then frames a region nothing is actually drawn in, and
+clicks land on stale positions. Any collision/leash code must take the size resolver
+as a parameter rather than calling the absolute-depth size function.
+
+# Do not make an "open a panel" control a toggle
+
+Controls that open a panel (e.g. Add bubble) call an explicit open, not `v => !v`.
+
+**Why:** the canvas also closes panels on background pointer-down, so a toggle turns
+an innocent second click into a silent close and the control reads as broken.
 
 # Bubbles must never overlap
 

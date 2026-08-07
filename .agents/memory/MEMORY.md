@@ -1,1 +1,1 @@
-- [Mind Canvas bubble model](mind-canvas-model.md) — everything is a nested bubble (no text content), size is depth-driven only, non-overlap solved per-frame on rendered positions.
+- [Mind Canvas bubble model](mind-canvas-model.md) — everything is a nested bubble (no text content); on-screen size/ring radius derive from relative layer, never stored coords; non-overlap solved per-frame.

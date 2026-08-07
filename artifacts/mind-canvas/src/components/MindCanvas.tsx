@@ -22,7 +22,7 @@ const GAP       = 9;   // minimum breathing room between any two bubbles
 // Purely depth-driven so a parent is ALWAYS visibly larger than its children,
 // no matter how many descendants it holds.
 
-const DEPTH_SIZE = [320, 166, 20, 58, 48, 42, 38, 35, 33, 31, 29];
+const DEPTH_SIZE = [320, 166, 112, 84, 68, 58, 52, 47, 43, 40, 37];
 
 function sizeForDepth(depth: number): number {
   return DEPTH_SIZE[Math.min(depth, DEPTH_SIZE.length - 1)];
@@ -30,6 +30,12 @@ function sizeForDepth(depth: number): number {
 function getSize(b: BubbleData): number {
   return sizeForDepth(b.depth);
 }
+
+// Only ever three layers are on screen, so on-screen size is decided by the
+// RELATIVE layer, never by absolute depth. That is what makes depth 8 read and
+// behave exactly like depth 1 once you are standing inside it.
+const LAYER_SIZE_OVERVIEW = [320, 166, 18];
+const LAYER_SIZE_FOCUSED  = [250, 132, 16];
 
 function relativeLayer(id: string, focusedId: string | null, byId: Record<string, BubbleData>): number {
   if (!focusedId) return byId[id]?.depth ?? 0;
@@ -51,8 +57,9 @@ function isInThreeLayerView(bubble: BubbleData, focusedId: string | null, byId: 
 
 function displaySize(bubble: BubbleData, focusedId: string | null, byId: Record<string, BubbleData>) {
   const layer = relativeLayer(bubble.id, focusedId, byId);
-  if (!focusedId) return getSize(bubble);
-  return [250, 132, 16][layer] ?? getSize(bubble);
+  if (layer < 0) return getSize(bubble);
+  const table = focusedId ? LAYER_SIZE_FOCUSED : LAYER_SIZE_OVERVIEW;
+  return table[Math.min(layer, 2)];
 }
 
 // How far a child may roam from its parent, beyond the touching distance.
@@ -118,7 +125,7 @@ const SEED: { label: string; color: string; children: SeedNode[] }[] = [
 // Ring radius that fits `n` circles of radius `cr` around a parent of radius `pr`
 // without the siblings touching each other.
 function ringRadius(pr: number, cr: number, n: number): number {
-  const touching = pr + cr + GAP + 16;
+  const touching = pr + cr + GAP + cr * 0.55 + 12;
   if (n <= 1) return touching;
   const spacing = (cr + GAP / 2) / Math.sin(Math.PI / n);
   return Math.max(touching, spacing);
@@ -190,7 +197,8 @@ function resolveCollisions(
   byId: Record<string, BubbleData>,
   pos: Record<string, { x: number; y: number }>,
   immovableId: string | null,
-  iterations = 4,
+  sizeOf: (b: BubbleData) => number,
+  iterations = 6,
 ) {
   const n = list.length;
 
@@ -202,7 +210,7 @@ function resolveCollisions(
         const pa = pos[a.id], pb = pos[b.id];
         if (!pa || !pb) continue;
 
-        const ra = getSize(a) / 2, rb = getSize(b) / 2;
+        const ra = sizeOf(a) / 2, rb = sizeOf(b) / 2;
         const minSep = ra + rb + GAP;
 
         let dx = pb.x - pa.x;
@@ -238,8 +246,11 @@ function resolveCollisions(
       const pb = pos[b.id];
       if (!parent || !pp || !pb) continue;
 
-      const minD = getSize(parent) / 2 + getSize(b) / 2 + GAP;
-      const maxD = minD + spreadForParentDepth(parent.depth);
+      // Leash limits are measured in RENDERED size, so a deep bubble gets the
+      // same generous ring as a shallow one once it is the thing you are inside.
+      const rp = sizeOf(parent) / 2, rc = sizeOf(b) / 2;
+      const minD = rp + rc + GAP;
+      const maxD = minD + Math.max(48, rp * 1.6);
 
       let dx = pb.x - pp.x;
       let dy = pb.y - pp.y;
@@ -263,19 +274,25 @@ function idHash(id: string): number {
   return h;
 }
 
-function getFloatParams(id: string, depth: number) {
+// Drift is keyed to the on-screen LAYER, not depth, so the amount of life a
+// bubble shows depends on how big it currently reads — third-layer dots barely
+// twitch, the layer you are inside breathes slowly.
+const LAYER_FLOAT_AMP = [17, 27, 6];
+
+function getFloatParams(id: string, layer: number) {
   const h  = idHash(id);
   const h1 = ((h >> 0) & 0xff) / 255;
   const h2 = ((h >> 4) & 0xff) / 255;
   const h3 = ((h >> 8) & 0xff) / 255;
-  const px = h1 * Math.PI * 2;
-  const py = h3 * Math.PI * 2;
-  // Amplitude shrinks with depth so deep bubbles stay legible in their ring.
-  const amp = Math.max(10, 52 * Math.pow(0.72, Math.max(0, depth - 1)));
-  if (depth === 0) {
-    return { freqX: 0.10 + h1 * .06, freqY: 0.08 + h2 * .05, ampX: 18, ampY: 14, phaseX: px, phaseY: py };
-  }
-  return   { freqX: 0.14 + h1 * .08, freqY: 0.11 + h2 * .07, ampX: amp, ampY: amp * .88, phaseX: px, phaseY: py };
+  const amp = LAYER_FLOAT_AMP[Math.min(Math.max(layer, 0), 2)];
+  return {
+    freqX:  0.10 + h1 * .07,
+    freqY:  0.08 + h2 * .06,
+    ampX:   amp,
+    ampY:   amp * .84,
+    phaseX: h1 * Math.PI * 2,
+    phaseY: h3 * Math.PI * 2,
+  };
 }
 
 // ─── Colors ───────────────────────────────────────────────────────────────────
@@ -285,19 +302,95 @@ const ROOT_COLORS = [
   'hsl(40,65%,65%)',  'hsl(200,55%,60%)', 'hsl(290,50%,66%)',
 ];
 
+// ─── View layout ──────────────────────────────────────────────────────────────
+// The single source of truth for where the visible three layers sit. Both the
+// animation loop and the camera use it, so the camera always frames exactly
+// what will be drawn — including at deep levels, where the stored world
+// coordinates bear no relation to the on-screen ring sizes.
+
+interface ViewLayout {
+  list:   BubbleData[];
+  map:    Record<string, BubbleData>;
+  pos:    Record<string, { x: number; y: number }>;
+  sizeOf: (b: BubbleData) => number;
+}
+
+function layoutView(all: BubbleData[], focusedId: string | null, time: number | null): ViewLayout {
+  const allMap  = Object.fromEntries(all.map(b => [b.id, b]));
+  const layerOf = (b: BubbleData) => relativeLayer(b.id, focusedId, allMap);
+  const list    = all
+    .filter(b => isInThreeLayerView(b, focusedId, allMap))
+    .sort((a, b) => layerOf(a) - layerOf(b));
+  const map     = Object.fromEntries(list.map(b => [b.id, b]));
+  const sizeOf  = (b: BubbleData) => displaySize(b, focusedId, allMap);
+
+  // Sibling sets, so each ring can be sized to actually hold everyone on it.
+  const rings: Record<string, string[]> = {};
+  for (const b of list) {
+    if (!b.parentId || !map[b.parentId]) continue;
+    (rings[b.parentId] ??= []).push(b.id);
+  }
+
+  // Layer 0 keeps its stored world position: roots (and the bubble you are
+  // inside) are freely placeable. Layers 1 and 2 are re-seated onto a ring
+  // sized from RENDERED sizes, keeping only the angle the user dragged them to.
+  const pos: Record<string, { x: number; y: number }> = {};
+
+  for (const b of list) {
+    const layer = layerOf(b);
+    let ownX = 0, ownY = 0;
+    if (time !== null) {
+      const p = getFloatParams(b.id, layer);
+      ownX = Math.cos(time * p.freqX + p.phaseX) * p.ampX;
+      ownY = Math.sin(time * p.freqY + p.phaseY) * p.ampY;
+    }
+
+    const parent = b.parentId ? map[b.parentId] : null;
+    const pp     = parent ? pos[parent.id] : null;
+
+    if (!parent || !pp) {
+      pos[b.id] = { x: b.x + ownX, y: b.y + ownY };
+      continue;
+    }
+
+    const ring  = rings[parent.id] ?? [b.id];
+    const index = Math.max(0, ring.indexOf(b.id));
+    const dx = b.x - parent.x, dy = b.y - parent.y;
+    const angle = Math.hypot(dx, dy) > 1
+      ? Math.atan2(dy, dx)
+      : (index / ring.length) * Math.PI * 2 - Math.PI / 2;
+    const r = ringRadius(sizeOf(parent) / 2, sizeOf(b) / 2, ring.length);
+
+    pos[b.id] = {
+      x: pp.x + Math.cos(angle) * r + ownX,
+      y: pp.y + Math.sin(angle) * r + ownY,
+    };
+  }
+
+  return { list, map, pos, sizeOf };
+}
+
 // ─── Camera fit ───────────────────────────────────────────────────────────────
 
-function fitBubbles(
-  group: BubbleData[],
+function fitLayout(
+  layout: ViewLayout,
   cx: MotionValue<number>,
   cy: MotionValue<number>,
   cs: MotionValue<number>,
   opts: { maxScale?: number; padding?: number; spring?: boolean } = {},
 ) {
-  if (!group.length) return;
+  const { list, pos, sizeOf } = layout;
+  if (!list.length) return;
   const { maxScale = 2.4, padding = 120, spring = false } = opts;
-  const xs = group.flatMap(b => [b.x - getSize(b) / 2, b.x + getSize(b) / 2]);
-  const ys = group.flatMap(b => [b.y - getSize(b) / 2, b.y + getSize(b) / 2]);
+  const xs = list.flatMap(b => {
+    const p = pos[b.id]; const r = sizeOf(b) / 2;
+    return p ? [p.x - r, p.x + r] : [];
+  });
+  const ys = list.flatMap(b => {
+    const p = pos[b.id]; const r = sizeOf(b) / 2;
+    return p ? [p.y - r, p.y + r] : [];
+  });
+  if (!xs.length) return;
   const minX = Math.min(...xs) - padding, maxX = Math.max(...xs) + padding;
   const minY = Math.min(...ys) - padding, maxY = Math.max(...ys) + padding;
   const scale = Math.min(
@@ -308,7 +401,7 @@ function fitBubbles(
   const centerX = (minX + maxX) / 2;
   const centerY = (minY + maxY) / 2;
   const cfg = spring
-    ? { type: 'spring', stiffness: 42, damping: 16 } as const
+    ? { type: 'spring', stiffness: 120, damping: 22 } as const
     : { type: 'tween', duration: .3, ease: 'easeOut' } as const;
   animate(cx, window.innerWidth  / 2 - centerX * scale, cfg);
   animate(cy, window.innerHeight / 2 - centerY * scale, cfg);
@@ -686,6 +779,7 @@ export default function MindCanvas() {
   // ── Refs readable from the rAF loop ──────────────────────────────────────
 
   const bubblesRef  = useRef<BubbleData[]>(INITIAL_BUBBLES);
+  const positionsRef = useRef<Record<string, { x: number; y: number }>>({});
   const editModeRef = useRef(false);
   const focusedIdRef = useRef<string | null>(null);
   const draggingRef = useRef<string | null>(null);
@@ -705,46 +799,17 @@ export default function MindCanvas() {
       if (now - last < 16) return;
       last = now;
 
-      const t    = (now - t0) / 1000;
-      const em   = editModeRef.current;
-      const all = bubblesRef.current;
-      const allMap = Object.fromEntries(all.map(b => [b.id, b]));
-      // Only the visible three-layer window participates in collision solving.
-      // Hidden descendants must never push the visible bubbles around.
-      const list = all
-        .filter(b => isInThreeLayerView(b, focusedIdRef.current, allMap))
-        .sort((a, b) => a.depth - b.depth);
-      const map  = Object.fromEntries(list.map(b => [b.id, b]));
-      const localSize = (b: BubbleData) => displaySize(b, focusedIdRef.current, allMap);
+      const t  = (now - t0) / 1000;
+      const em = editModeRef.current;
 
-      // 1 — base positions: home + own drift + inherited parent drift
-      const drift: Record<string, { x: number; y: number }> = {};
-      const pos:   Record<string, { x: number; y: number }> = {};
+      // Edit mode freezes the drift so bubbles hold still while you work.
+      const { list, map, pos, sizeOf } =
+        layoutView(bubblesRef.current, focusedIdRef.current, em ? null : t);
 
-      for (const b of list) {
-        if (em) {
-          drift[b.id] = { x: 0, y: 0 };
-          pos[b.id]   = { x: b.x, y: b.y };
-          continue;
-        }
-        const p  = getFloatParams(b.id, b.depth);
-        const pd = b.parentId ? (drift[b.parentId] ?? { x: 0, y: 0 }) : { x: 0, y: 0 };
-        const ownX = b.depth === 0
-          ? Math.sin(t * p.freqX + p.phaseX) * p.ampX
-          : Math.cos(t * p.freqX + p.phaseX) * p.ampX;
-        const ownY = b.depth === 0
-          ? Math.cos(t * p.freqY + p.phaseY) * p.ampY
-          : Math.sin(t * p.freqY + p.phaseY) * p.ampY;
+      // Push everything apart until nothing overlaps.
+      resolveCollisions(list, map, pos, draggingRef.current, sizeOf);
 
-        const dx = ownX + pd.x * 0.45;
-        const dy = ownY + pd.y * 0.45;
-        drift[b.id] = { x: dx, y: dy };
-        pos[b.id]   = { x: b.x + dx, y: b.y + dy };
-      }
-
-      // 2 — push everything apart until nothing overlaps
-      resolveCollisions(list, map, pos, draggingRef.current, 4, localSize);
-
+      positionsRef.current = pos;
       setPositions(pos);
     };
 
@@ -789,17 +854,19 @@ export default function MindCanvas() {
 
   // ── Camera helpers ───────────────────────────────────────────────────────
 
+  // Both helpers frame the layout that is actually about to be drawn, computed
+  // with drift switched off so the camera targets the resting arrangement.
+
   const fitAll = useCallback(() => {
-    // Measure the whole tree so no descendant ever clips off screen.
-    fitBubbles(bubblesRef.current, cameraX, cameraY, cameraScale, { maxScale: .9, padding: 90 });
+    fitLayout(layoutView(bubblesRef.current, null, null),
+      cameraX, cameraY, cameraScale, { maxScale: .9, padding: 90 });
   }, [cameraX, cameraY, cameraScale]);
 
   const focusBubble = useCallback((id: string | null) => {
     setFocusedId(id);
     if (!id) { fitAll(); return; }
-    const currentMap = Object.fromEntries(bubblesRef.current.map(b => [b.id, b]));
-    const group = bubblesRef.current.filter(b => isInThreeLayerView(b, id, currentMap));
-    fitBubbles(group, cameraX, cameraY, cameraScale, { maxScale: 2.2, padding: 110, spring: true });
+    fitLayout(layoutView(bubblesRef.current, id, null),
+      cameraX, cameraY, cameraScale, { maxScale: 1.6, padding: 110, spring: true });
   }, [cameraX, cameraY, cameraScale, fitAll]);
 
   useEffect(() => {
@@ -1080,6 +1147,15 @@ export default function MindCanvas() {
     }]);
   };
 
+  // ── Recolor a pillar ─────────────────────────────────────────────────────
+  // A pillar's color is the identity of its whole branch, so every descendant
+  // inherits it. Duplicate-checking happens inside the picker.
+
+  const recolorPillar = (id: string, color: string) => {
+    const family = new Set<string>([id, ...descendantsOf(id)]);
+    setBubbles(prev => prev.map(b => (family.has(b.id) ? { ...b, color } : b)));
+  };
+
   // ── Delete bubble (and its whole subtree) ────────────────────────────────
 
   const deleteBubble = (id: string) => {
@@ -1146,9 +1222,8 @@ export default function MindCanvas() {
 
         {bubbles.filter(b => isInThreeLayerView(b, focusedId, byId)).map(bubble => {
           const layer = relativeLayer(bubble.id, focusedId, byId);
-          // At overview, retained absolute sizing gives roots their landmark role.
-          // Once inside a bubble, the three visible layers are sized locally.
-          const size = focusedId ? [250, 128, 42][layer] : getSize(bubble);
+          // Size always comes from the relative layer, matching the solver.
+          const size  = displaySize(bubble, focusedId, byId);
           const p     = positions[bubble.id] ?? { x: bubble.x, y: bubble.y };
           const interactive = interactiveIds.has(bubble.id);
           const visualOnly = layer === 2;
@@ -1186,12 +1261,29 @@ export default function MindCanvas() {
               onMouseEnter={() => !visualOnly && setHoveredBubble(bubble.id)}
               onMouseLeave={() => setHoveredBubble(h => h === bubble.id ? null : h)}
             >
-              <GlassBubbleSVG size={size} color={bubble.color} label={bubble.label}
-                isEditing={editingId === bubble.id} editValue={editValue}
-                onEditChange={setEditValue}
-                onEditSave={() => handleEditSave(bubble.id)}
-                onEditCancel={() => setEditingId(null)}
-              />
+              {visualOnly ? (
+                // Third layer is a bare presence marker: no label, no chrome.
+                <div style={{
+                  width: size, height: size, borderRadius: '50%',
+                  background: bubble.color,
+                  boxShadow: '0 1px 3px rgba(0,0,0,.20), inset 0 1px 1.5px rgba(255,255,255,.65)',
+                }} />
+              ) : (
+                <GlassBubbleSVG size={size} color={bubble.color} label={bubble.label}
+                  isEditing={editingId === bubble.id} editValue={editValue}
+                  onEditChange={setEditValue}
+                  onEditSave={() => handleEditSave(bubble.id)}
+                  onEditCancel={() => setEditingId(null)}
+                />
+              )}
+
+              {editMode && isEditSelected && bubble.depth === 0 && (
+                <PillarColorPicker
+                  color={bubble.color}
+                  existingColors={bubbles.filter(b => b.depth === 0 && b.id !== bubble.id).map(b => b.color)}
+                  onChoose={next => recolorPillar(bubble.id, next)}
+                />
+              )}
 
               {showDelete && (
                 <motion.button initial={{ opacity: 0, scale: .7 }} animate={{ opacity: 1, scale: 1 }}
@@ -1262,7 +1354,14 @@ export default function MindCanvas() {
             <motion.button style={pillBase}
               className="flex items-center gap-2 font-light text-gray-500"
               whileHover={{ scale: 1.04 }} whileTap={{ scale: .97 }}
-              onClick={() => setShowAddPanel(v => !v)}>
+              onPointerDown={e => e.stopPropagation()}
+              onPointerUp={e => e.stopPropagation()}
+              onClick={e => {
+                // Always open — a toggle here silently swallows a second click.
+                e.stopPropagation();
+                cancelQuickCreate();
+                setShowAddPanel(true);
+              }}>
               <span style={{ fontSize: 18, lineHeight: 1 }}>+</span> Add bubble
             </motion.button>
           </>
