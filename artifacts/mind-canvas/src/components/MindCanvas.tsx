@@ -13,14 +13,24 @@ interface BubbleData {
   y:         number;
   color:     string;
   depth:     number;   // 0 = root pillar … up to MAX_DEPTH
+
+  // Where a child sits relative to its parent. Stored separately from x/y
+  // because x/y are laid out in ABSOLUTE-depth world units, which bear no
+  // relation to the rendered ring once you are standing inside a deep bubble.
+  //   angle  — radians around the parent
+  //   radial — 0 = touching the parent, 1 = at the end of its leash
+  // Both are optional; a bubble that has never been dragged uses the natural
+  // ring position derived from its siblings.
+  angle?:    number;
+  radial?:   number;
 }
 
 const MAX_DEPTH = 10;
 const GAP       = 9;   // minimum breathing room between any two bubbles
 
 // ─── Sizes ────────────────────────────────────────────────────────────────────
-// Purely depth-driven so a parent is ALWAYS visibly larger than its children,
-// no matter how many descendants it holds.
+// Stored world sizes stay purely depth-driven — they only ever seed the initial
+// coordinates. What is actually DRAWN is decided by `computeSizes` below.
 
 const DEPTH_SIZE = [320, 166, 112, 84, 68, 58, 52, 47, 43, 40, 37];
 
@@ -31,11 +41,49 @@ function getSize(b: BubbleData): number {
   return sizeForDepth(b.depth);
 }
 
-// Only ever three layers are on screen, so on-screen size is decided by the
-// RELATIVE layer, never by absolute depth. That is what makes depth 8 read and
-// behave exactly like depth 1 once you are standing inside it.
+// Only ever three layers are on screen, so on-screen size STARTS from the
+// RELATIVE layer, never from absolute depth. That is what makes depth 8 read
+// and behave exactly like depth 1 once you are standing inside it. Content then
+// scales each bubble within its layer.
 const LAYER_SIZE_OVERVIEW = [320, 166, 18];
 const LAYER_SIZE_FOCUSED  = [250, 132, 16];
+
+// ─── Content weight ───────────────────────────────────────────────────────────
+// "How much is in here" is the bubble's ENTIRE subtree, not just its direct
+// children, so something added ten levels down still nudges its top pillar.
+
+function contentWeights(all: BubbleData[]): Record<string, number> {
+  const kids: Record<string, string[]> = {};
+  for (const b of all) if (b.parentId) (kids[b.parentId] ??= []).push(b.id);
+
+  const weight: Record<string, number> = {};
+  const visit = (id: string): number => {
+    const cached = weight[id];
+    if (cached !== undefined) return cached;
+    weight[id] = 0;                                   // cycle guard
+    let total = 0;
+    for (const c of kids[id] ?? []) total += 1 + visit(c);
+    weight[id] = total;
+    return total;
+  };
+  for (const b of all) visit(b.id);
+  return weight;
+}
+
+// Saturating growth: the first few bubbles you add make a clear difference, the
+// fiftieth makes a small one. Gradual, and an enormous branch can never balloon.
+const CONTENT_MIN  = 0.75;   // a completely empty bubble
+const CONTENT_MAX  = 1.5;    // the asymptote a giant branch approaches
+const CONTENT_HALF = 10;     // subtree size that lands halfway between the two
+
+function contentScale(weight: number): number {
+  const t = weight / (weight + CONTENT_HALF);
+  return CONTENT_MIN + (CONTENT_MAX - CONTENT_MIN) * t;
+}
+
+// However much a child contains, it must still read as clearly smaller than its
+// own parent. Without this cap, content sizing destroys the nesting.
+const MAX_CHILD_RATIO = 0.62;
 
 function relativeLayer(id: string, focusedId: string | null, byId: Record<string, BubbleData>): number {
   if (!focusedId) return byId[id]?.depth ?? 0;
@@ -55,16 +103,55 @@ function isInThreeLayerView(bubble: BubbleData, focusedId: string | null, byId: 
   return layer >= 0 && layer <= 2;
 }
 
-function displaySize(bubble: BubbleData, focusedId: string | null, byId: Record<string, BubbleData>) {
-  const layer = relativeLayer(bubble.id, focusedId, byId);
-  if (layer < 0) return getSize(bubble);
+// Rendered diameter for everything currently on screen. Layers 0 and 1 grow
+// with their content; layer-2 indicator dots stay a fixed pip.
+//
+// `ordered` MUST be sorted by relative layer ascending — a parent has to be
+// sized before its child so the child can be capped against it.
+function computeSizes(
+  ordered: BubbleData[],
+  layerOf: (b: BubbleData) => number,
+  focusedId: string | null,
+  weight: Record<string, number>,
+  visible: Record<string, BubbleData>,
+): Record<string, number> {
   const table = focusedId ? LAYER_SIZE_FOCUSED : LAYER_SIZE_OVERVIEW;
-  return table[Math.min(layer, 2)];
+  const size: Record<string, number> = {};
+
+  for (const b of ordered) {
+    const layer = Math.min(Math.max(layerOf(b), 0), 2);
+    let s = layer === 2
+      ? table[2]
+      : table[layer] * contentScale(weight[b.id] ?? 0);
+
+    const parentSize = b.parentId ? size[b.parentId] : undefined;
+    if (parentSize !== undefined && visible[b.parentId!]) {
+      s = Math.min(s, parentSize * MAX_CHILD_RATIO);
+    }
+    size[b.id] = s;
+  }
+  return size;
 }
 
-// How far a child may roam from its parent, beyond the touching distance.
-function spreadForParentDepth(depth: number): number {
-  return Math.max(60, 240 * Math.pow(0.7, depth));
+// Everything the view needs about *who is on screen and how big they are*.
+// Shared by the animation loop, the camera and the renderer so all three agree.
+interface ViewSizes {
+  allMap:  Record<string, BubbleData>;
+  layerOf: (b: BubbleData) => number;
+  ordered: BubbleData[];
+  visible: Record<string, BubbleData>;
+  sizes:   Record<string, number>;
+}
+
+function viewSizes(all: BubbleData[], focusedId: string | null): ViewSizes {
+  const allMap  = Object.fromEntries(all.map(b => [b.id, b]));
+  const layerOf = (b: BubbleData) => relativeLayer(b.id, focusedId, allMap);
+  const ordered = all
+    .filter(b => isInThreeLayerView(b, focusedId, allMap))
+    .sort((a, b) => layerOf(a) - layerOf(b));
+  const visible = Object.fromEntries(ordered.map(b => [b.id, b]));
+  const sizes   = computeSizes(ordered, layerOf, focusedId, contentWeights(all), visible);
+  return { allMap, layerOf, ordered, visible, sizes };
 }
 
 // ─── Seed tree ────────────────────────────────────────────────────────────────
@@ -130,6 +217,21 @@ function ringRadius(pr: number, cr: number, n: number): number {
   const spacing = (cr + GAP / 2) / Math.sin(Math.PI / n);
   return Math.max(touching, spacing);
 }
+
+// The band a child may live in, measured in RENDERED radii:
+//   minD    — touching its parent
+//   natural — where it sits if it has never been dragged
+//   maxD    — the end of its leash
+// One definition, used by the layout, the drag and the collision solver, so
+// none of them can pull a bubble back out of where another put it.
+function radialBand(pr: number, cr: number, n: number) {
+  const minD    = pr + cr + GAP;
+  const natural = ringRadius(pr, cr, n);
+  const maxD    = Math.max(natural + Math.max(40, pr * 0.9), minD + Math.max(48, pr * 1.6));
+  return { minD, maxD, natural };
+}
+
+const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 
 function buildBubbles(): BubbleData[] {
   const out: BubbleData[] = [];
@@ -198,6 +300,7 @@ function resolveCollisions(
   pos: Record<string, { x: number; y: number }>,
   immovableId: string | null,
   sizeOf: (b: BubbleData) => number,
+  bandOf: (b: BubbleData) => { minD: number; maxD: number } | null,
   iterations = 6,
 ) {
   const n = list.length;
@@ -246,11 +349,11 @@ function resolveCollisions(
       const pb = pos[b.id];
       if (!parent || !pp || !pb) continue;
 
-      // Leash limits are measured in RENDERED size, so a deep bubble gets the
-      // same generous ring as a shallow one once it is the thing you are inside.
-      const rp = sizeOf(parent) / 2, rc = sizeOf(b) / 2;
-      const minD = rp + rc + GAP;
-      const maxD = minD + Math.max(48, rp * 1.6);
+      // Exactly the band the layout used, so the solver can never drag a bubble
+      // back out of the spot the user just put it in.
+      const band = bandOf(b);
+      if (!band) continue;
+      const { minD, maxD } = band;
 
       let dx = pb.x - pp.x;
       let dy = pb.y - pp.y;
@@ -277,21 +380,38 @@ function idHash(id: string): number {
 // Drift is keyed to the on-screen LAYER, not depth, so the amount of life a
 // bubble shows depends on how big it currently reads — third-layer dots barely
 // twitch, the layer you are inside breathes slowly.
-const LAYER_FLOAT_AMP = [17, 27, 6];
+//
+// A child gets THREE independent motions, which is what makes the canvas read
+// as alive rather than as a rigid diagram: free drift, a slow swing along its
+// parent's ring, and a gentle in/out along its leash.
+const LAYER_FLOAT_AMP  = [24, 18, 5];        // free drift, px
+const LAYER_ORBIT_AMP  = [0, 0.085, 0.035];  // swing along the ring, radians
+const LAYER_RADIAL_AMP = [0, 16, 4];         // breathing along the leash, px
+
+const TAU = Math.PI * 2;
 
 function getFloatParams(id: string, layer: number) {
   const h  = idHash(id);
   const h1 = ((h >> 0) & 0xff) / 255;
   const h2 = ((h >> 4) & 0xff) / 255;
   const h3 = ((h >> 8) & 0xff) / 255;
-  const amp = LAYER_FLOAT_AMP[Math.min(Math.max(layer, 0), 2)];
+  const l  = Math.min(Math.max(layer, 0), 2);
+  const amp = LAYER_FLOAT_AMP[l];
   return {
-    freqX:  0.10 + h1 * .07,
-    freqY:  0.08 + h2 * .06,
+    freqX:  0.15 + h1 * .10,
+    freqY:  0.12 + h2 * .09,
     ampX:   amp,
     ampY:   amp * .84,
-    phaseX: h1 * Math.PI * 2,
-    phaseY: h3 * Math.PI * 2,
+    phaseX: h1 * TAU,
+    phaseY: h3 * TAU,
+
+    freqA:  0.09 + h2 * .06,
+    ampA:   LAYER_ORBIT_AMP[l],
+    phaseA: h2 * TAU,
+
+    freqR:  0.11 + h3 * .07,
+    ampR:   LAYER_RADIAL_AMP[l],
+    phaseR: h1 * TAU + 1.7,
   };
 }
 
@@ -313,16 +433,13 @@ interface ViewLayout {
   map:    Record<string, BubbleData>;
   pos:    Record<string, { x: number; y: number }>;
   sizeOf: (b: BubbleData) => number;
+  bandOf: (b: BubbleData) => { minD: number; maxD: number } | null;
 }
 
 function layoutView(all: BubbleData[], focusedId: string | null, time: number | null): ViewLayout {
-  const allMap  = Object.fromEntries(all.map(b => [b.id, b]));
-  const layerOf = (b: BubbleData) => relativeLayer(b.id, focusedId, allMap);
-  const list    = all
-    .filter(b => isInThreeLayerView(b, focusedId, allMap))
-    .sort((a, b) => layerOf(a) - layerOf(b));
-  const map     = Object.fromEntries(list.map(b => [b.id, b]));
-  const sizeOf  = (b: BubbleData) => displaySize(b, focusedId, allMap);
+  const { allMap, layerOf, ordered: list, visible: map, sizes } = viewSizes(all, focusedId);
+  const sizeOf = (b: BubbleData) =>
+    sizes[b.id] ?? (relativeLayer(b.id, focusedId, allMap) < 0 ? getSize(b) : LAYER_SIZE_OVERVIEW[2]);
 
   // Sibling sets, so each ring can be sized to actually hold everyone on it.
   const rings: Record<string, string[]> = {};
@@ -331,19 +448,27 @@ function layoutView(all: BubbleData[], focusedId: string | null, time: number | 
     (rings[b.parentId] ??= []).push(b.id);
   }
 
+  const bandOf = (b: BubbleData) => {
+    const parent = b.parentId ? map[b.parentId] : null;
+    if (!parent) return null;
+    const ring = rings[parent.id] ?? [b.id];
+    return radialBand(sizeOf(parent) / 2, sizeOf(b) / 2, ring.length);
+  };
+
   // Layer 0 keeps its stored world position: roots (and the bubble you are
-  // inside) are freely placeable. Layers 1 and 2 are re-seated onto a ring
-  // sized from RENDERED sizes, keeping only the angle the user dragged them to.
+  // inside) are freely placeable. Layers 1 and 2 hang off their parent by an
+  // ANGLE and a RADIAL fraction of the leash — both of which the user can drag,
+  // and both of which are resolved against RENDERED sizes so a deep level
+  // behaves exactly like a shallow one.
   const pos: Record<string, { x: number; y: number }> = {};
+  const t = time ?? 0;
+  const moving = time !== null;
 
   for (const b of list) {
-    const layer = layerOf(b);
-    let ownX = 0, ownY = 0;
-    if (time !== null) {
-      const p = getFloatParams(b.id, layer);
-      ownX = Math.cos(time * p.freqX + p.phaseX) * p.ampX;
-      ownY = Math.sin(time * p.freqY + p.phaseY) * p.ampY;
-    }
+    const layer  = layerOf(b);
+    const p      = moving ? getFloatParams(b.id, layer) : null;
+    const ownX   = p ? Math.cos(t * p.freqX + p.phaseX) * p.ampX : 0;
+    const ownY   = p ? Math.sin(t * p.freqY + p.phaseY) * p.ampY : 0;
 
     const parent = b.parentId ? map[b.parentId] : null;
     const pp     = parent ? pos[parent.id] : null;
@@ -356,10 +481,22 @@ function layoutView(all: BubbleData[], focusedId: string | null, time: number | 
     const ring  = rings[parent.id] ?? [b.id];
     const index = Math.max(0, ring.indexOf(b.id));
     const dx = b.x - parent.x, dy = b.y - parent.y;
-    const angle = Math.hypot(dx, dy) > 1
+    // Explicit dragged angle wins; otherwise fall back to the seeded direction,
+    // and finally to an even spread around the ring.
+    let angle = b.angle ?? (Math.hypot(dx, dy) > 1
       ? Math.atan2(dy, dx)
-      : (index / ring.length) * Math.PI * 2 - Math.PI / 2;
-    const r = ringRadius(sizeOf(parent) / 2, sizeOf(b) / 2, ring.length);
+      : (index / ring.length) * TAU - Math.PI / 2);
+
+    const band = radialBand(sizeOf(parent) / 2, sizeOf(b) / 2, ring.length);
+    const span = Math.max(1, band.maxD - band.minD);
+    const home = b.radial ?? (band.natural - band.minD) / span;
+    let r = band.minD + span * clamp01(home);
+
+    if (p) {
+      angle += Math.sin(t * p.freqA + p.phaseA) * p.ampA;   // swing along the ring
+      r     += Math.sin(t * p.freqR + p.phaseR) * p.ampR;   // breathe in and out
+      r      = Math.min(Math.max(r, band.minD), band.maxD);
+    }
 
     pos[b.id] = {
       x: pp.x + Math.cos(angle) * r + ownX,
@@ -367,7 +504,7 @@ function layoutView(all: BubbleData[], focusedId: string | null, time: number | 
     };
   }
 
-  return { list, map, pos, sizeOf };
+  return { list, map, pos, sizeOf, bandOf };
 }
 
 // ─── Camera fit ───────────────────────────────────────────────────────────────
@@ -751,6 +888,10 @@ function AddPanel({ bubbles, onAdd, onClose, initialParentPath = [], quickCreate
 interface DragOrigin {
   mx: number; my: number; bx: number; by: number; dist: number;
   subtreeOrigins: Record<string, { x: number; y: number }>;
+  // Rendered position at grab time + the leash band, so a child drag can be
+  // resolved in RENDERED space (where the user is actually pointing).
+  rx: number; ry: number;
+  band: { minD: number; maxD: number } | null;
 }
 
 // ─── Main canvas ──────────────────────────────────────────────────────────────
@@ -775,6 +916,11 @@ export default function MindCanvas() {
   const cameraScale = useMotionValue(0.5);
 
   const byId = useMemo(() => Object.fromEntries(bubbles.map(b => [b.id, b])), [bubbles]);
+
+  // Rendered diameters, content-scaled and hierarchy-clamped. Same pure function
+  // the animation loop and camera use, so the drawn size always matches the size
+  // the solver reserved space for.
+  const sizeMap = useMemo(() => viewSizes(bubbles, focusedId).sizes, [bubbles, focusedId]);
 
   // ── Refs readable from the rAF loop ──────────────────────────────────────
 
@@ -803,11 +949,11 @@ export default function MindCanvas() {
       const em = editModeRef.current;
 
       // Edit mode freezes the drift so bubbles hold still while you work.
-      const { list, map, pos, sizeOf } =
+      const { list, map, pos, sizeOf, bandOf } =
         layoutView(bubblesRef.current, focusedIdRef.current, em ? null : t);
 
       // Push everything apart until nothing overlaps.
-      resolveCollisions(list, map, pos, draggingRef.current, sizeOf);
+      resolveCollisions(list, map, pos, draggingRef.current, sizeOf, bandOf);
 
       positionsRef.current = pos;
       setPositions(pos);
@@ -979,7 +1125,9 @@ export default function MindCanvas() {
 
   // ── Drag ─────────────────────────────────────────────────────────────────
 
-  const dragOrigin = useRef<DragOrigin>({ mx: 0, my: 0, bx: 0, by: 0, dist: 0, subtreeOrigins: {} });
+  const dragOrigin = useRef<DragOrigin>({
+    mx: 0, my: 0, bx: 0, by: 0, dist: 0, subtreeOrigins: {}, rx: 0, ry: 0, band: null,
+  });
   const lastClick  = useRef<Record<string, number>>({});
 
   const onBubbleDown = (e: React.PointerEvent, id: string) => {
@@ -990,11 +1138,23 @@ export default function MindCanvas() {
 
     const b = bubblesRef.current.find(x => x.id === id);
     if (!b) return;
-    // Whole subtree travels with the dragged bubble
-    const subtree = descendantsOf(id);
+
+    // A root (or the bubble you are inside) moves freely, and its whole subtree
+    // travels with it. A child instead moves within its parent's leash, so it
+    // only needs the band — its descendants follow automatically.
     const subtreeOrigins: Record<string, { x: number; y: number }> = {};
-    bubblesRef.current.forEach(c => { if (subtree.has(c.id)) subtreeOrigins[c.id] = { x: c.x, y: c.y }; });
-    dragOrigin.current = { mx: e.clientX, my: e.clientY, bx: b.x, by: b.y, dist: 0, subtreeOrigins };
+    if (!b.parentId) {
+      const subtree = descendantsOf(id);
+      bubblesRef.current.forEach(c => { if (subtree.has(c.id)) subtreeOrigins[c.id] = { x: c.x, y: c.y }; });
+    }
+
+    const rendered = positionsRef.current[id] ?? { x: b.x, y: b.y };
+    const band = layoutView(bubblesRef.current, focusedIdRef.current, null).bandOf(b);
+
+    dragOrigin.current = {
+      mx: e.clientX, my: e.clientY, bx: b.x, by: b.y, dist: 0, subtreeOrigins,
+      rx: rendered.x, ry: rendered.y, band,
+    };
   };
 
   const onBubbleMove = (e: React.PointerEvent) => {
@@ -1009,22 +1169,28 @@ export default function MindCanvas() {
     setBubbles(prev => {
       const dragged = prev.find(b => b.id === id);
       if (!dragged) return prev;
+      const band = dragOrigin.current.band;
+      const parentPos = dragged.parentId ? positionsRef.current[dragged.parentId] : null;
+
       return prev.map(b => {
         if (b.id === id) {
-          let nx = dragOrigin.current.bx + sdx;
-          let ny = dragOrigin.current.by + sdy;
-          if (dragged.parentId) {
-            const par = prev.find(p => p.id === dragged.parentId);
-            if (par) {
-              const dx2 = nx - par.x, dy2 = ny - par.y;
-              const d   = Math.hypot(dx2, dy2) || 1;
-              const minD = getSize(par) / 2 + getSize(dragged) / 2 + GAP;
-              const maxD = minD + spreadForParentDepth(par.depth);
-              const cl   = Math.min(Math.max(d, minD), maxD);
-              if (cl !== d) { nx = par.x + (dx2 / d) * cl; ny = par.y + (dy2 / d) * cl; }
-            }
+          // Child: resolve the pointer against the parent's RENDERED position and
+          // store an angle + a fraction of the leash, so the drag survives the
+          // next frame instead of being recomputed away.
+          if (dragged.parentId && band && parentPos) {
+            const nrx = dragOrigin.current.rx + sdx;
+            const nry = dragOrigin.current.ry + sdy;
+            const dx2 = nrx - parentPos.x, dy2 = nry - parentPos.y;
+            const d   = Math.hypot(dx2, dy2) || 1;
+            const span = Math.max(1, band.maxD - band.minD);
+            return {
+              ...b,
+              angle:  Math.atan2(dy2, dx2),
+              radial: clamp01((d - band.minD) / span),
+            };
           }
-          return { ...b, x: nx, y: ny };
+          // Root / focused bubble: free world movement.
+          return { ...b, x: dragOrigin.current.bx + sdx, y: dragOrigin.current.by + sdy };
         }
         const so = dragOrigin.current.subtreeOrigins[b.id];
         if (so) return { ...b, x: so.x + sdx, y: so.y + sdy };
@@ -1223,7 +1389,7 @@ export default function MindCanvas() {
         {bubbles.filter(b => isInThreeLayerView(b, focusedId, byId)).map(bubble => {
           const layer = relativeLayer(bubble.id, focusedId, byId);
           // Size always comes from the relative layer, matching the solver.
-          const size  = displaySize(bubble, focusedId, byId);
+          const size  = sizeMap[bubble.id] ?? getSize(bubble);
           const p     = positions[bubble.id] ?? { x: bubble.x, y: bubble.y };
           const interactive = interactiveIds.has(bubble.id);
           const visualOnly = layer === 2;

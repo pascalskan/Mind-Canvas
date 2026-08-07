@@ -15,21 +15,35 @@ field (or pills/orbs that render text inside a circle) contradicts the product c
 **How to apply:** when adding a feature that needs to show items belonging to a
 bubble, create child bubbles rather than a list, a tooltip, or an expandable panel.
 
-# Size is depth-driven only, never content-driven
+# Size is content-driven, but capped against the parent
 
-Bubble diameter comes from a fixed table, not from how many children it holds.
+Rendered diameter = the layer's base size × a saturating function of the bubble's
+ENTIRE subtree size, then hard-capped to a fraction of its parent's rendered size.
 
-**Why:** a parent must *always* read as visibly larger than its children. Sizing by
-child count lets a busy child outgrow its parent and destroys the hierarchy.
+**Why:** the user wants a bubble's size to show how much is inside it, and wants a
+bubble added ten levels down to visibly grow its top-level pillar — hence whole
+subtree, not direct children. The cap exists because content sizing *will* otherwise
+let a busy child outgrow its parent, which destroys the nesting read. Both halves are
+required; keeping only the first reintroduces the bug the cap was added for.
 
-**How to apply:** never make size a function of descendant count.
+**How to apply:** the growth curve must saturate (weight/(weight+k)), never be linear —
+an unbounded curve lets one huge branch balloon off screen. Size the parent before the
+child so the cap has something to clamp against, which means iterating the visible set
+sorted by relative layer ascending.
 
 # On-screen geometry comes from the RELATIVE layer, never from stored coordinates
 
-Only three layers are ever visible. Both on-screen size and each child's ring radius
-are derived from the relative layer (0 = the bubble you are inside, 1 = its children,
-2 = grandchild dots). Stored `x`/`y` contribute only the *angle* a child sits at;
-its distance is recomputed every frame.
+Only three layers are ever visible. On-screen size and each child's leash band are
+derived from the relative layer (0 = the bubble you are inside, 1 = its children,
+2 = grandchild dots), never from stored `x`/`y`.
+
+A child's placement is stored as an `angle` plus a `radial` fraction of that band —
+NOT as a distance. The fraction is resolved against rendered sizes each frame, so the
+same stored value means "a third of the way out" at every depth. Storing an absolute
+distance instead is what broke deep levels; storing nothing at all is what made drags
+fail to stick and the canvas look frozen. The band definition must be shared by the
+layout, the drag and the collision solver — if the solver computes its own band, it
+silently drags bubbles back out of the spot the user just put them in.
 
 **Why:** stored coordinates were laid out for a bubble's *absolute* depth. A depth-8
 bubble is a ~43px world object but renders at ~132px once you are standing inside it,
