@@ -776,6 +776,21 @@ function BubbleEditPanel({ color, scale, isPillar, inheritedColor, existingColor
 
 // ─── Add Panel — drill down the full tree, any depth ──────────────────────────
 
+// The panel is anchored by its TOP, never its bottom. Bottom-anchoring was the
+// bug behind "I click a parent and nothing happens": each level you open makes
+// the panel taller, which shoved every row ~100px upward out from under the
+// cursor, so the next click landed on whatever slid into that spot. Anchored at
+// the top, new levels extend downward and the rows already on screen hold still.
+const LIST_MAX_H = 'min(384px, 42vh)';
+
+// Where that top sits: high enough that the panel at full height still clears
+// the bottom of the window, but never off the top edge on a short window.
+function panelTop(): number {
+  const listMax = Math.min(384, window.innerHeight * 0.42);
+  const chrome  = 200;   // title + label field + footer caption + buttons
+  return Math.max(16, window.innerHeight - 80 - (listMax + chrome));
+}
+
 function AddPanel({ bubbles, onAdd, onClose, initialParentPath = [], quickCreate, anchor, onQuickSave, onQuickCancel }: {
   bubbles: BubbleData[];
   onAdd: (label: string, parentId: string | null) => void;
@@ -789,11 +804,17 @@ function AddPanel({ bubbles, onAdd, onClose, initialParentPath = [], quickCreate
   const [label, setLabel]           = useState('');
   const [parentPath, setParentPath] = useState<string[]>(initialParentPath);
 
-  // Selecting a parent reveals its children in a new section BELOW the fold of
-  // this fixed-height list — without this, the click looks like it did nothing.
+  // Selecting a parent reveals its children in a new section that may sit below
+  // the fold. Scroll by the MINIMUM needed ('nearest') rather than jumping to
+  // the bottom: every pixel of scroll slides the rows out from under the
+  // cursor, so a big jump makes the user's next click land on the wrong row.
+  // Instant, not smooth, so the list has settled before they can click again.
   const levelsRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    levelsRef.current?.scrollTo({ top: levelsRef.current.scrollHeight, behavior: 'smooth' });
+    const box = levelsRef.current;
+    if (!box) return;
+    const sections = box.querySelectorAll('[data-level]');
+    sections[sections.length - 1]?.scrollIntoView({ block: 'nearest' });
   }, [parentPath]);
 
   const byId  = useMemo(() => Object.fromEntries(bubbles.map(b => [b.id, b])), [bubbles]);
@@ -861,7 +882,7 @@ function AddPanel({ bubbles, onAdd, onClose, initialParentPath = [], quickCreate
         width: 292,
         left: Math.max(16, Math.min(anchor.x + 44, window.innerWidth - 308)),
         top: Math.max(16, Math.min(anchor.y - 120, window.innerHeight - 290)),
-      } : { width: 292, bottom: 80, right: 24 }}
+      } : { width: 292, top: panelTop(), right: 24 }}
       onPointerDown={e => e.stopPropagation()}>
       <div className="p-5"
         style={{ background: 'rgba(255,255,255,.88)', backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)', borderRadius: 18, boxShadow: '0 8px 40px rgba(0,0,0,.08),inset 0 0 0 1px rgba(255,255,255,.9)' }}>
@@ -874,7 +895,8 @@ function AddPanel({ bubbles, onAdd, onClose, initialParentPath = [], quickCreate
           onKeyDown={e => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') onClose(); }}
           className="w-full bg-transparent border-b border-gray-200 text-gray-700 font-light text-sm outline-none pb-1 mb-4 placeholder-gray-300"/>
 
-        {!quickCreate && <div ref={levelsRef} className="max-h-72 overflow-y-auto pr-1 -mr-1">
+        {!quickCreate && <div ref={levelsRef} className="overflow-y-auto pr-1 -mr-1"
+          style={{ maxHeight: LIST_MAX_H }}>
           <p className="text-xs text-gray-400 font-light mb-2">Add to</p>
           <div className="flex flex-col gap-1.5 mb-3">
             <Row text="New root bubble" selected={parentPath.length === 0} onSelect={() => setParentPath([])}/>
@@ -884,7 +906,7 @@ function AddPanel({ bubbles, onAdd, onClose, initialParentPath = [], quickCreate
           </div>
 
           {levels.map((lvl, i) => (
-            <div key={lvl.parent.id} className="mb-3 border-l border-gray-100"
+            <div key={lvl.parent.id} data-level className="mb-3 border-l border-gray-100"
               style={{ paddingLeft: 10, marginLeft: Math.min(i * 8, 40) }}>
               <p className="text-xs text-gray-300 font-light mb-1.5">inside {lvl.parent.label}</p>
               <div className="flex flex-col gap-1.5">
