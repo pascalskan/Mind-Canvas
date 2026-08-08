@@ -20,6 +20,11 @@ interface BubbleContextValue {
   editMode:      boolean;
   editSelection: string | null;
   byId:          Record<string, BubbleData>;
+  /**
+   * False when the most recent cloud PUT failed. Resets to true on the next
+   * successful PUT. Starts true so no spurious toast shows before the first save.
+   */
+  cloudSaveOk:   boolean;
 
   setFocusedId:     (id: string | null) => void;
   setEditMode:      (on: boolean) => void;
@@ -135,6 +140,7 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
   const [editMode,      setEditMode]      = useState(false);
   const [editSelection, setEditSelection] = useState<string | null>(null);
   const [loaded,        setLoaded]        = useState(false);
+  const [cloudSaveOk,   setCloudSaveOk]   = useState(true);
 
   // Stable ref so callbacks don't go stale
   const focusedIdRef = useRef(focusedId);
@@ -152,6 +158,10 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
   // bootstrap GET resolves. When set, we skip the cloud overwrite and push the
   // user's local state up instead so no edits are lost.
   const editedBeforeCloudRef = useRef(false);
+
+  // Monotonically increasing counter — each PUT captures the generation at
+  // dispatch time and only updates cloudSaveOk if it is still the latest.
+  const saveGenRef = useRef(0);
 
   // Load persisted data on mount
   useEffect(() => {
@@ -198,7 +208,13 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
     saveBubbles(bubbles).then(ok => {
       if (!ok) console.warn('[MindCanvas] AsyncStorage write failed — data is still safe in cloud.');
     });
-    if (cloudSyncedRef.current) pushToCloud(bubbles);
+    if (cloudSyncedRef.current) {
+      const gen = ++saveGenRef.current;
+      pushToCloud(bubbles).then(ok => {
+        // Only apply the result if no newer PUT has been dispatched since.
+        if (saveGenRef.current === gen) setCloudSaveOk(ok);
+      });
+    }
   }, [bubbles, loaded]);
 
   const byId = useMemo(
@@ -408,6 +424,7 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
         Alert.alert('Import map', `Replace the current map with ${imported.length} bubbles?`, [
           { text: 'Cancel', style: 'cancel' },
           { text: 'Replace', style: 'destructive', onPress: () => {
+            editedBeforeCloudRef.current = true;
             setBubbles(imported); setFocusedId(null); setEditSelection(null); setEditMode(false);
           }},
         ]);
@@ -422,13 +439,13 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
   }, [focusedId]);
 
   const value = useMemo<BubbleContextValue>(() => ({
-    bubbles, focusedId, editMode, editSelection, byId,
+    bubbles, focusedId, editMode, editSelection, byId, cloudSaveOk,
     setFocusedId, setEditMode, setEditSelection,
     addBubble, deleteBubble, renameBubble, recolorBubble, resizeBubble,
     updateBubblePosition, batchUpdatePositions, snapGrandchildren,
     exportMap, importMap,
   }), [
-    bubbles, focusedId, editMode, editSelection, byId,
+    bubbles, focusedId, editMode, editSelection, byId, cloudSaveOk,
     addBubble, deleteBubble, renameBubble, recolorBubble, resizeBubble,
     updateBubblePosition, batchUpdatePositions, snapGrandchildren,
     exportMap, importMap,

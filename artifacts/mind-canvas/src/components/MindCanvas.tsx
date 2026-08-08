@@ -1012,6 +1012,7 @@ export default function MindCanvas() {
     setBubbles,
     byId,
     lastSave,
+    cloudSaveOk,
     addBubble,
     deleteBubblesById,
     renameBubble,
@@ -1706,13 +1707,24 @@ export default function MindCanvas() {
         </motion.div>
       )}
 
-      {/* Save-failed toast */}
+      {/* Local save-failed toast */}
       {saveFailedToast && (
         <motion.div
           initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }}
           className="absolute bottom-24 left-1/2 -translate-x-1/2 z-50 pointer-events-none select-none text-center"
           style={{ background: 'rgba(255,248,245,.94)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 20, padding: '9px 20px', boxShadow: '0 2px 20px rgba(0,0,0,.09),inset 0 0 0 1px rgba(200,80,60,.22)', fontSize: 12, color: 'hsl(12,55%,40%)', letterSpacing: '.03em', fontWeight: 300, maxWidth: 'calc(100vw - 32px)', whiteSpace: 'nowrap' }}>
           ⚠ Map could not be saved — storage may be full. Your changes exist until you refresh.
+        </motion.div>
+      )}
+
+      {/* Cloud save-failed toast — shown when the server PUT fails, clears on next successful save */}
+      {!cloudSaveOk && !saveFailedToast && (
+        <motion.div
+          key="cloud-save-failed"
+          initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }}
+          className="absolute bottom-24 left-1/2 -translate-x-1/2 z-50 pointer-events-none select-none text-center"
+          style={{ background: 'rgba(255,248,245,.94)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 20, padding: '9px 20px', boxShadow: '0 2px 20px rgba(0,0,0,.09),inset 0 0 0 1px rgba(200,80,60,.22)', fontSize: 12, color: 'hsl(12,55%,40%)', letterSpacing: '.03em', fontWeight: 300, maxWidth: 'calc(100vw - 32px)', whiteSpace: 'nowrap' }}>
+          ☁ Couldn't reach the server — your changes are saved locally. Make any edit to retry.
         </motion.div>
       )}
 

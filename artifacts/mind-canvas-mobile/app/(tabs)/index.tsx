@@ -14,6 +14,7 @@ export default function MainScreen() {
   const {
     bubbles, focusedId, editMode, editSelection,
     byId, setFocusedId, setEditMode, setEditSelection,
+    cloudSaveOk,
     exportMap, importMap,
   } = useBubbles();
 
@@ -177,6 +178,15 @@ export default function MainScreen() {
         </View>
       )}
 
+      {/* ── Cloud save-failed toast ─────────────────────────────────────── */}
+      {!cloudSaveOk && (
+        <View style={[styles.cloudFailToast, { bottom: bottomInset + 76 }]} pointerEvents="none">
+          <Text style={styles.cloudFailText}>
+            ☁ Couldn't reach the server — saved locally. Make any edit to retry.
+          </Text>
+        </View>
+      )}
+
       {/* ── Edit panel ──────────────────────────────────────────────────── */}
       {editMode && editSelection && (
         <EditBubblePanel bubbleId={editSelection} focusLabel={focusEditLabel} />
@@ -247,5 +257,18 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.08, shadowRadius: 6, elevation: 3,
+  },
+  cloudFailToast: {
+    position: 'absolute', left: 16, right: 16,
+    alignItems: 'center', zIndex: 60,
+  },
+  cloudFailText: {
+    fontSize: 12, fontFamily: 'Inter_400Regular',
+    color: 'hsl(12,55%,40%)', textAlign: 'center',
+    backgroundColor: 'rgba(255,248,245,0.94)',
+    borderRadius: 16, paddingHorizontal: 16, paddingVertical: 9,
+    overflow: 'hidden',
+    shadowColor: '#c85040', shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.15, shadowRadius: 8, elevation: 4,
   },
 });

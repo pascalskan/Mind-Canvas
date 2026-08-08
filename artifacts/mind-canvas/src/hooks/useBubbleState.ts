@@ -32,13 +32,17 @@ async function fetchFromCloud(): Promise<BubbleData[] | null> {
   }
 }
 
-function pushToCloud(bubbles: BubbleData[]): void {
-  // Fire-and-forget — localStorage already has a local copy.
-  fetch(SYNC_URL, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ version: 2, bubbles }),
-  }).catch(() => { /* ignore network errors */ });
+async function pushToCloud(bubbles: BubbleData[]): Promise<boolean> {
+  try {
+    const res = await fetch(SYNC_URL, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version: 2, bubbles }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 import {
   MAX_DEPTH,
@@ -63,6 +67,12 @@ export interface BubbleStateResult {
   byId:             Record<string, BubbleData>;
   /** Last result from saveBubbles — drives the toast and quota-warning banner. */
   lastSave:         { ok: boolean; bytes: number };
+  /**
+   * False when the most recent cloud PUT failed (network error or non-OK
+   * response). Resets to true as soon as a subsequent PUT succeeds.
+   * Starts as true so no spurious toast appears before the first save.
+   */
+  cloudSaveOk:      boolean;
   /** Adds a root or child bubble and auto-saves. */
   addBubble:        (label: string, parentId: string | null, opts?: AddBubbleOpts) => void;
   /** Removes every id in `doomed` from the tree and auto-saves. */
@@ -81,6 +91,8 @@ export function useBubbleState(initialBubbles: BubbleData[]): BubbleStateResult 
     ok: true,
     bytes: 0,
   });
+  // true until a cloud PUT definitively fails; resets to true on next success.
+  const [cloudSaveOk, setCloudSaveOk] = useState(true);
 
   // Gate cloud PUTs behind the initial GET so we never overwrite the canonical
   // Postgres row with a stale localStorage or default value on first load.
@@ -95,6 +107,10 @@ export function useBubbleState(initialBubbles: BubbleData[]): BubbleStateResult 
   // GET resolves. When set we keep the user's local state instead of
   // overwriting it with the cloud response.
   const editedBeforeCloudRef = useRef(false);
+
+  // Monotonically increasing counter — each PUT captures the generation at
+  // dispatch time and only updates cloudSaveOk if it is still the latest.
+  const saveGenRef = useRef(0);
 
   const byId = useMemo(
     () => Object.fromEntries(bubbles.map(b => [b.id, b])),
@@ -126,7 +142,11 @@ export function useBubbleState(initialBubbles: BubbleData[]): BubbleStateResult 
     const result = saveBubbles(bubbles);
     setLastSave(result);
     if (cloudSyncedRef.current) {
-      pushToCloud(bubbles);
+      const gen = ++saveGenRef.current;
+      pushToCloud(bubbles).then(ok => {
+        // Only apply the result if no newer PUT has been dispatched since.
+        if (saveGenRef.current === gen) setCloudSaveOk(ok);
+      });
     }
   }, [bubbles]);
 
@@ -239,6 +259,7 @@ export function useBubbleState(initialBubbles: BubbleData[]): BubbleStateResult 
     setBubbles,
     byId,
     lastSave,
+    cloudSaveOk,
     addBubble,
     deleteBubblesById,
     renameBubble,

@@ -27,14 +27,19 @@ export async function fetchFromCloud(): Promise<BubbleData[] | null> {
   }
 }
 
-export function pushToCloud(bubbles: BubbleData[]): void {
+export async function pushToCloud(bubbles: BubbleData[]): Promise<boolean> {
   const url = cloudUrl();
-  if (!url) return;
-  fetch(url, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ version: STORAGE_VERSION, bubbles }),
-  }).catch(() => { /* ignore */ });
+  if (!url) return true; // no server configured — treat as "ok" so no spurious toast
+  try {
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version: STORAGE_VERSION, bubbles }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 // ── Local save / load ─────────────────────────────────────────────────────────
