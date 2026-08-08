@@ -1101,7 +1101,7 @@ export default function MindCanvas() {
       // During a pan the camera MotionValue already redraws everything; skipping
       // MV updates here prevents two competing transform writes per frame and
       // keeps panning smooth on mobile.
-      if (!isPanning.current) {
+      if (activePointers.current.size === 0) {
         for (const b of bubblesRef.current) {
           const p = pos[b.id];
           const mv = bubbleMVs.current.get(b.id);
@@ -1241,10 +1241,12 @@ export default function MindCanvas() {
     return () => window.removeEventListener('keydown', h);
   }, [editingId, editMode, showAddPanel, focusedId, cancelEditMode, stepOut]);
 
-  // ── Pan ──────────────────────────────────────────────────────────────────
+  // ── Pan / Pinch-to-zoom ──────────────────────────────────────────────────
 
-  const isPanning = useRef(false);
-  const lastPan   = useRef({ x: 0, y: 0 });
+  // Track every active pointer by id so we can distinguish single-finger pan
+  // from two-finger pinch. The map is keyed by pointerId.
+  const activePointers  = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const lastPinchDist   = useRef<number | null>(null);
 
   const onContainerDown = (e: React.PointerEvent) => {
     if (quickCreate) {
@@ -1253,21 +1255,67 @@ export default function MindCanvas() {
       return;
     }
     if (showAddPanel) { setShowAddPanel(false); return; }
-    isPanning.current = true;
-    lastPan.current = { x: e.clientX, y: e.clientY };
+
+    // Register this pointer and capture it so we keep receiving its events
+    // even when it moves outside the element.
+    activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     e.currentTarget.setPointerCapture(e.pointerId);
-    if (editingId) { setEditingId(null); return; }
-    if (editMode && editSelection) { setEditSelection(null); setShowColorPicker(false); return; }
-    if (focusedId) { stepOut(); }
+
+    if (activePointers.current.size === 1) {
+      // First finger — single-touch side-effects (same as before)
+      if (editingId) { setEditingId(null); return; }
+      if (editMode && editSelection) { setEditSelection(null); setShowColorPicker(false); return; }
+      if (focusedId) { stepOut(); }
+    } else if (activePointers.current.size === 2) {
+      // Second finger — seed the pinch distance; single-pan stops naturally
+      // because onContainerMove guards on pointer count.
+      const pts = [...activePointers.current.values()];
+      lastPinchDist.current = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+    }
   };
+
   const onContainerMove = (e: React.PointerEvent) => {
-    if (!isPanning.current) return;
-    cameraX.set(cameraX.get() + e.clientX - lastPan.current.x);
-    cameraY.set(cameraY.get() + e.clientY - lastPan.current.y);
-    lastPan.current = { x: e.clientX, y: e.clientY };
+    const prev = activePointers.current.get(e.pointerId);
+    if (!prev) return;
+
+    // Always update the stored position for this pointer first.
+    activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (activePointers.current.size === 1) {
+      // Single-finger pan — same behaviour as before.
+      cameraX.set(cameraX.get() + e.clientX - prev.x);
+      cameraY.set(cameraY.get() + e.clientY - prev.y);
+    } else if (activePointers.current.size >= 2) {
+      // Two-finger pinch — zoom centred on the midpoint between both fingers,
+      // using the same clamp limits as the wheel handler (0.06 – 5×).
+      const pts  = [...activePointers.current.values()];
+      const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+
+      if (lastPinchDist.current !== null && lastPinchDist.current > 0 && dist > 0) {
+        const f  = dist / lastPinchDist.current;
+        const s0 = cameraScale.get();
+        const s1 = Math.min(Math.max(0.06, s0 * f), 5);
+
+        const el   = containerRef.current;
+        const rect = el?.getBoundingClientRect();
+        const midX = (pts[0].x + pts[1].x) / 2 - (rect?.left ?? 0);
+        const midY = (pts[0].y + pts[1].y) / 2 - (rect?.top  ?? 0);
+
+        cameraX.set(midX - (midX - cameraX.get()) * (s1 / s0));
+        cameraY.set(midY - (midY - cameraY.get()) * (s1 / s0));
+        cameraScale.set(s1);
+      }
+
+      lastPinchDist.current = dist;
+    }
   };
+
   const onContainerUp = (e: React.PointerEvent) => {
-    if (isPanning.current) { isPanning.current = false; e.currentTarget.releasePointerCapture(e.pointerId); }
+    if (!activePointers.current.has(e.pointerId)) return;
+    activePointers.current.delete(e.pointerId);
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+    // When fewer than two fingers remain, reset pinch state.
+    if (activePointers.current.size < 2) lastPinchDist.current = null;
   };
 
   // ── Zoom ─────────────────────────────────────────────────────────────────
@@ -1309,6 +1357,15 @@ export default function MindCanvas() {
     if (editingId === id) return;
     e.stopPropagation();
     e.currentTarget.setPointerCapture(e.pointerId);
+
+    // Register in the shared pointer map so a second finger on the canvas can
+    // detect that two fingers are active and switch to pinch-to-zoom.
+    activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (activePointers.current.size >= 2) {
+      const pts = [...activePointers.current.values()];
+      lastPinchDist.current = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+    }
+
     draggingRef.current = id;
 
     const b = bubblesRef.current.find(x => x.id === id);
@@ -1333,6 +1390,19 @@ export default function MindCanvas() {
   };
 
   const onBubbleMove = (e: React.PointerEvent) => {
+    // Keep the shared pointer map current so pinch distance stays accurate.
+    if (activePointers.current.has(e.pointerId)) {
+      activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    }
+
+    // When two or more fingers are active, hand off to the pinch handler on
+    // the container instead of moving the bubble — this way a pinch that
+    // starts on a bubble zooms the canvas rather than dragging that bubble.
+    if (activePointers.current.size >= 2) {
+      onContainerMove(e);
+      return;
+    }
+
     const id = draggingRef.current;
     if (!id || editModeRef.current) return;
     const dx = e.clientX - dragOrigin.current.mx;
@@ -1381,6 +1451,9 @@ export default function MindCanvas() {
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
       e.currentTarget.releasePointerCapture(e.pointerId);
     }
+    // Clean up from the shared pinch-tracking map.
+    activePointers.current.delete(e.pointerId);
+    if (activePointers.current.size < 2) lastPinchDist.current = null;
     const isClick = dragOrigin.current.dist < 10;
 
     if (isClick) {
