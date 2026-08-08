@@ -518,6 +518,171 @@ describe('drag-to-reposition — applyChildDrag → persistence', () => {
   });
 });
 
+// ─── Scale changes ────────────────────────────────────────────────────────────
+// The size-picker in MindCanvas.tsx writes `scale` back to state via setBubbles,
+// exactly the same code path as a drag.  These tests confirm that scale changes
+// survive a save / loadBubbles round-trip (simulated page refresh) and that
+// edge-case values (min, max, removed) are handled correctly.
+
+import { SCALE_MIN, SCALE_MAX } from './lib/bubbleLayout';
+
+describe('scale changes — setBubbles → persistence', () => {
+  it('persists a scale value set on a root bubble', async () => {
+    const { result } = renderBubbleState();
+
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => b.id === 'r0' ? { ...b, scale: 1.4 } : b),
+      );
+    });
+
+    const saved = readStorage();
+    expect(saved.find(b => b.id === 'r0')?.scale).toBeCloseTo(1.4);
+  });
+
+  it('persists a scale value set on a child bubble', async () => {
+    const { result } = renderBubbleState();
+
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => b.id === 'c1' ? { ...b, scale: 0.6 } : b),
+      );
+    });
+
+    const saved = readStorage();
+    expect(saved.find(b => b.id === 'c1')?.scale).toBeCloseTo(0.6);
+  });
+
+  it('loadBubbles restores the scale exactly after a round-trip', async () => {
+    const { result } = renderBubbleState();
+
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => b.id === 'c2' ? { ...b, scale: 1.7 } : b),
+      );
+    });
+
+    // Simulate page refresh.
+    const restored = loadBubbles(FALLBACK);
+    expect(restored.find(b => b.id === 'c2')?.scale).toBeCloseTo(1.7);
+  });
+
+  it('persists SCALE_MIN (minimum allowed scale)', async () => {
+    const { result } = renderBubbleState();
+
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => b.id === 'c1' ? { ...b, scale: SCALE_MIN } : b),
+      );
+    });
+
+    const restored = loadBubbles(FALLBACK);
+    expect(restored.find(b => b.id === 'c1')?.scale).toBeCloseTo(SCALE_MIN);
+  });
+
+  it('persists SCALE_MAX (maximum allowed scale)', async () => {
+    const { result } = renderBubbleState();
+
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => b.id === 'r0' ? { ...b, scale: SCALE_MAX } : b),
+      );
+    });
+
+    const restored = loadBubbles(FALLBACK);
+    expect(restored.find(b => b.id === 'r0')?.scale).toBeCloseTo(SCALE_MAX);
+  });
+
+  it('scale absent (undefined) means default — loadBubbles restores it as undefined', async () => {
+    // Start with a bubble that already has a scale, then remove it.
+    const withScale: BubbleData[] = [
+      ...SEED.map(b => b.id === 'c1' ? { ...b, scale: 1.3 } : b),
+    ];
+    const { result } = renderBubbleState(withScale);
+
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => {
+          if (b.id !== 'c1') return b;
+          const { scale: _removed, ...rest } = b;
+          return rest as typeof b;
+        }),
+      );
+    });
+
+    const restored = loadBubbles(FALLBACK);
+    expect(restored.find(b => b.id === 'c1')?.scale).toBeUndefined();
+  });
+
+  it('only the target bubble scale changes; siblings are untouched', async () => {
+    const { result } = renderBubbleState();
+
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => b.id === 'c1' ? { ...b, scale: 1.2 } : b),
+      );
+    });
+
+    const saved = readStorage();
+    // Sibling and root must not have an unexpected scale field.
+    expect(saved.find(b => b.id === 'c2')?.scale).toBeUndefined();
+    expect(saved.find(b => b.id === 'r0')?.scale).toBeUndefined();
+    expect(saved.find(b => b.id === 'c1')?.scale).toBeCloseTo(1.2);
+  });
+
+  it('two sequential scale changes persist only the final value', async () => {
+    const { result } = renderBubbleState();
+
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => b.id === 'r0' ? { ...b, scale: 0.8 } : b),
+      );
+    });
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => b.id === 'r0' ? { ...b, scale: 1.5 } : b),
+      );
+    });
+
+    const saved = readStorage();
+    expect(saved.find(b => b.id === 'r0')?.scale).toBeCloseTo(1.5);
+  });
+
+  it('hook in-memory state and localStorage agree after a scale change', async () => {
+    const { result } = renderBubbleState();
+
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => b.id === 'c2' ? { ...b, scale: 1.1 } : b),
+      );
+    });
+
+    const saved  = readStorage();
+    const inMem  = result.current.bubbles.find(b => b.id === 'c2');
+    const onDisk = saved.find(b => b.id === 'c2');
+
+    expect(inMem?.scale).toBeCloseTo(onDisk?.scale!);
+  });
+
+  it('scale survives an interleaved rename without being lost', async () => {
+    const { result } = renderBubbleState();
+
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => b.id === 'c1' ? { ...b, scale: 1.6 } : b),
+      );
+    });
+    await act(async () => {
+      result.current.renameBubble('c1', 'Renamed');
+    });
+
+    const restored = loadBubbles(FALLBACK);
+    const c1 = restored.find(b => b.id === 'c1');
+    expect(c1?.label).toBe('Renamed');
+    expect(c1?.scale).toBeCloseTo(1.6);
+  });
+});
+
 // ─── Combined sequences ───────────────────────────────────────────────────────
 
 describe('combined add → rename → delete sequences', () => {
