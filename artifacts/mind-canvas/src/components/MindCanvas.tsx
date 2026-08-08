@@ -1,35 +1,20 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import { motion, useMotionValue, animate, motionValue, type MotionValue } from 'framer-motion';
-import LZString from 'lz-string';
+import {
+  saveBubbles,
+  loadBubbles as loadBubblesFromStorage,
+  clearBubbles,
+  STORAGE_QUOTA_BYTES,
+  STORAGE_WARN_RATIO,
+  type BubbleData,
+} from '../persistence';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 // Everything on the canvas is a bubble. There is no "content" — a note, an item,
 // a sub-task are all just bubbles nested one level deeper.
-
-interface BubbleData {
-  id:        string;
-  parentId?: string;
-  label:     string;
-  x:         number;
-  y:         number;
-  color:     string;
-  depth:     number;   // 0 = root pillar … up to MAX_DEPTH
-
-  // Where a child sits relative to its parent. Stored separately from x/y
-  // because x/y are laid out in ABSOLUTE-depth world units, which bear no
-  // relation to the rendered ring once you are standing inside a deep bubble.
-  //   angle  — radians around the parent
-  //   radial — 0 = touching the parent, 1 = at the end of its leash
-  // Both are optional; a bubble that has never been dragged uses the natural
-  // ring position derived from its siblings.
-  angle?:    number;
-  radial?:   number;
-
-  // Manual size, as a multiplier of whatever its current layer's base size is
-  // (1 = 100%). Layer-relative rather than absolute, so "120%" means the same
-  // thing — a fifth bigger than its peers — at every depth. Undefined = 100%.
-  scale?:    number;
-}
+//
+// BubbleData is defined in ../persistence and re-exported from there so it can
+// be unit-tested independently of the React component tree.
 
 const MAX_DEPTH = 10;
 const GAP       = 9;   // minimum breathing room between any two bubbles
@@ -267,68 +252,6 @@ function buildBubbles(): BubbleData[] {
 const INITIAL_BUBBLES = buildBubbles();
 
 // ─── Persistence ──────────────────────────────────────────────────────────────
-// State is saved to localStorage on every change so the mind map survives
-// a page refresh or closing the browser. A version key means a future schema
-// change can detect and discard stale saves instead of silently corrupting them.
-
-const STORAGE_KEY     = 'mind-canvas-bubbles';
-const STORAGE_VERSION = 2;
-
-interface StoredState {
-  version: number;
-  bubbles: BubbleData[];
-}
-
-function loadBubbles(): BubbleData[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return INITIAL_BUBBLES;
-
-    // Try decompressing first (version 2+). If that yields nothing, fall back
-    // to treating the stored value as plain JSON (version 1 legacy saves).
-    let json: string | null = null;
-    try {
-      json = LZString.decompress(raw);
-    } catch { /* decompression threw — treat as legacy */ }
-
-    if (!json) {
-      // Legacy uncompressed save — parse directly and migrate gracefully.
-      json = raw;
-    }
-
-    const parsed: StoredState = JSON.parse(json);
-    // Accept both the current version and the previous uncompressed version (1)
-    // so a user who hasn't saved yet since the upgrade doesn't lose their data.
-    if (parsed.version !== STORAGE_VERSION && parsed.version !== 1) return INITIAL_BUBBLES;
-    if (!Array.isArray(parsed.bubbles) || parsed.bubbles.length === 0) return INITIAL_BUBBLES;
-    return parsed.bubbles;
-  } catch {
-    return INITIAL_BUBBLES;
-  }
-}
-
-// localStorage quota is typically 5 MB (UTF-16, so 2 bytes per char).
-// Warn when the compressed payload exceeds 80 % of that estimate.
-const STORAGE_QUOTA_BYTES  = 5 * 1024 * 1024;
-const STORAGE_WARN_RATIO   = 0.8;
-
-function saveBubbles(bubbles: BubbleData[]): { ok: boolean; bytes: number } {
-  try {
-    const state: StoredState = { version: STORAGE_VERSION, bubbles };
-    const json = JSON.stringify(state);
-    const compressed = LZString.compress(json);
-    localStorage.setItem(STORAGE_KEY, compressed);
-    // Each JS string character occupies 2 bytes in UTF-16 storage.
-    return { ok: true, bytes: compressed.length * 2 };
-  } catch {
-    // Storage full or unavailable — caller decides how to surface this.
-    return { ok: false, bytes: 0 };
-  }
-}
-
-function clearBubbles(): void {
-  try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
-}
 
 // ─── Collision solver ─────────────────────────────────────────────────────────
 // Guarantees no two bubbles ever overlap, and every child stays in the ring
@@ -1097,7 +1020,7 @@ interface DragOrigin {
 // ─── Main canvas ──────────────────────────────────────────────────────────────
 
 export default function MindCanvas() {
-  const [bubbles,        setBubbles]        = useState<BubbleData[]>(() => loadBubbles());
+  const [bubbles,        setBubbles]        = useState<BubbleData[]>(() => loadBubblesFromStorage(INITIAL_BUBBLES));
   const [focusedId,      setFocusedId]      = useState<string | null>(null);
   const [editingId,      setEditingId]      = useState<string | null>(null);
   const [editValue,      setEditValue]      = useState('');
