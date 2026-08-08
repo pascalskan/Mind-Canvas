@@ -37,10 +37,10 @@ export function getSize(b: BubbleData): number {
 }
 
 // Display sizes for the three-layer view (world units).
-// These can differ from the stored bubble size so transitions feel smooth.
-// Mobile uses larger values than web so bubbles read clearly on a small screen.
-export const LAYER_SIZES_OVERVIEW: [number, number, number] = [260, 175, 75];
-export const LAYER_SIZES_FOCUSED:  [number, number, number] = [300, 200, 80];
+// Matches web constants exactly: LAYER_SIZE_OVERVIEW = [320, 166, 18]
+// and LAYER_SIZE_FOCUSED = [250, 132, 16]. Layer-2 items render as tiny dots.
+export const LAYER_SIZES_OVERVIEW: [number, number, number] = [320, 166, 18];
+export const LAYER_SIZES_FOCUSED:  [number, number, number] = [250, 132, 16];
 
 // ── Ring geometry ──────────────────────────────────────────────────────────────
 
@@ -102,6 +102,22 @@ export function getBubbleDisplaySize(
 
 let _counter = 0;
 function sid(): string { return `init${_counter++}`; }
+
+/** Returns the IDs of all descendants of a given bubble (children, grandchildren, …). */
+export function getAllDescendants(id: string, bubbles: BubbleData[]): string[] {
+  const result: string[] = [];
+  const queue = [id];
+  while (queue.length) {
+    const cur = queue.shift()!;
+    for (const b of bubbles) {
+      if (b.parentId === cur) {
+        result.push(b.id);
+        queue.push(b.id);
+      }
+    }
+  }
+  return result;
+}
 
 export function buildInitialBubbles(): BubbleData[] {
   _counter = 0;

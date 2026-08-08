@@ -1,84 +1,126 @@
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
+import Svg, {
+  Circle, Defs, Ellipse, RadialGradient, Stop,
+} from 'react-native-svg';
 import { BubbleData } from '@/lib/bubbleTypes';
 
 interface Props {
-  bubble:      BubbleData;
-  size:        number;
+  bubble:         BubbleData;
+  size:           number;
   /** Screen-space center of the bubble */
-  screenX:     number;
-  screenY:     number;
-  isFocused:   boolean;
-  isSelected:  boolean;
-  isGrandchild: boolean;
+  screenX:        number;
+  screenY:        number;
+  isFocused:      boolean;
+  isSelected:     boolean;
+  isGrandchild:   boolean;
+  /** UN-scaled world display size, used for font-size so labels don't snap */
+  worldDisplaySize?: number;
 }
 
 /** Glass sphere bubble. Positioned absolutely in screen space. */
 export const BubbleNode = React.memo(function BubbleNode({
-  bubble, size, screenX, screenY, isFocused, isSelected, isGrandchild,
+  bubble, size, screenX, screenY, isFocused, isSelected, isGrandchild, worldDisplaySize,
 }: Props) {
   const r = size / 2;
-  const labelFontSize = Math.max(9, Math.min(15, size * 0.12));
+
+  // Layer-2 grandchild → tiny coloured dot, no label, no chrome
+  if (isGrandchild) {
+    return (
+      <View
+        style={[
+          styles.wrapper,
+          { left: screenX - r, top: screenY - r, width: size, height: size },
+        ]}
+        pointerEvents="none"
+      >
+        <View
+          style={{
+            width: size,
+            height: size,
+            borderRadius: r,
+            backgroundColor: bubble.color,
+            opacity: 0.64,
+          }}
+        />
+      </View>
+    );
+  }
+
+  // Font-size is in screen pixels on React Native, so it must use the actual
+  // rendered screen-space size. This scales continuously with camera.scale
+  // during pinch, giving the same proportional feel as the web SVG labels.
+  const labelFontSize = Math.max(size * 0.135, 8.5);
+
+  // Unique gradient IDs scoped to this bubble so SVG defs don't collide
+  const uid = `b${bubble.id.replace(/[^a-zA-Z0-9]/g, '')}`;
 
   return (
     <View
       style={[styles.wrapper, { left: screenX - r, top: screenY - r, width: size, height: size }]}
       pointerEvents="none"
     >
-      {/* ── Main sphere ──────────────────────────────────────────────────── */}
-      <View
-        style={[
-          styles.sphere,
-          {
-            borderRadius: r,
-            backgroundColor: bubble.color,
-            shadowColor: bubble.color,
-            shadowRadius: r * 0.35,
-          },
-          isFocused  && styles.focusedSphere,
-          isSelected && styles.selectedSphere,
-        ]}
+      {/* ── SVG glass sphere ─────────────────────────────────────────────── */}
+      <Svg
+        width={size}
+        height={size}
+        viewBox={`0 0 ${size} ${size}`}
+        style={StyleSheet.absoluteFill}
+        pointerEvents="none"
       >
-        {/* Top specular highlight */}
-        <View
-          style={[
-            styles.highlight,
-            {
-              width:  size * 0.44,
-              height: size * 0.22,
-              borderRadius: size * 0.12,
-              top:  size * 0.10,
-              left: size * 0.20,
-            },
-          ]}
+        <Defs>
+          {/* Body: white → color → color */}
+          <RadialGradient id={`bg-${uid}`} cx="30%" cy="30%" r="70%">
+            <Stop offset="0%"   stopColor="#ffffff" stopOpacity=".92" />
+            <Stop offset="42%"  stopColor={bubble.color} stopOpacity=".88" />
+            <Stop offset="100%" stopColor={bubble.color} stopOpacity="1" />
+          </RadialGradient>
+          {/* Rim: transparent → white → transparent */}
+          <RadialGradient id={`rim-${uid}`} cx="50%" cy="50%" r="50%">
+            <Stop offset="83%"  stopColor="#fff" stopOpacity="0" />
+            <Stop offset="96%"  stopColor="#fff" stopOpacity=".88" />
+            <Stop offset="100%" stopColor="#fff" stopOpacity="0" />
+          </RadialGradient>
+          {/* Upper-left specular */}
+          <RadialGradient id={`spec-${uid}`} cx="50%" cy="50%" r="50%">
+            <Stop offset="0%"   stopColor="#fff" stopOpacity=".92" />
+            <Stop offset="28%"  stopColor="#fff" stopOpacity=".28" />
+            <Stop offset="100%" stopColor="#fff" stopOpacity="0" />
+          </RadialGradient>
+          {/* Lower-right glow */}
+          <RadialGradient id={`glow-${uid}`} cx="50%" cy="50%" r="50%">
+            <Stop offset="0%"   stopColor={bubble.color} stopOpacity=".72" />
+            <Stop offset="100%" stopColor={bubble.color} stopOpacity="0" />
+          </RadialGradient>
+        </Defs>
+
+        {/* Body */}
+        <Circle cx={r} cy={r} r={r - 1} fill={`url(#bg-${uid})`} />
+        {/* Rim highlight */}
+        <Circle cx={r} cy={r} r={r - 1} fill={`url(#rim-${uid})`} />
+        {/* Lower-right glow */}
+        <Circle cx={size * 0.64} cy={size * 0.68} r={size * 0.38} fill={`url(#glow-${uid})`} />
+        {/* Upper-left specular ellipse (rotated −40°) */}
+        <Ellipse
+          cx={size * 0.28}
+          cy={size * 0.24}
+          rx={size * 0.17}
+          ry={size * 0.10}
+          fill={`url(#spec-${uid})`}
+          transform={`rotate(-40, ${size * 0.28}, ${size * 0.24})`}
         />
-        {/* Bottom rim */}
-        <View
-          style={[
-            styles.rimLight,
-            {
-              width:  size * 0.28,
-              height: size * 0.10,
-              borderRadius: size * 0.05,
-              bottom: size * 0.11,
-              right:  size * 0.14,
-            },
-          ]}
-        />
-      </View>
+      </Svg>
 
       {/* ── Label ────────────────────────────────────────────────────────── */}
-      {!isGrandchild && (
-        <View style={StyleSheet.absoluteFill} pointerEvents="none">
-          <Text
-            style={[styles.label, { fontSize: labelFontSize }]}
-            numberOfLines={2}
-            allowFontScaling={false}
-          >
-            {bubble.label}
-          </Text>
-        </View>
-      )}
+      <View style={StyleSheet.absoluteFill} pointerEvents="none">
+        <Text
+          style={[styles.label, { fontSize: labelFontSize }]}
+          numberOfLines={2}
+          allowFontScaling={false}
+        >
+          {bubble.label}
+        </Text>
+      </View>
 
       {/* ── Outer selection / focus ring ─────────────────────────────────── */}
       {(isSelected || isFocused) && (
@@ -102,38 +144,15 @@ const styles = StyleSheet.create({
   wrapper: {
     position: 'absolute',
   },
-  sphere: {
-    ...StyleSheet.absoluteFillObject,
-    opacity: 0.80,
-    overflow: 'hidden',
-    elevation: 6,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.28,
-  },
-  focusedSphere: {
-    opacity: 0.92,
-  },
-  selectedSphere: {
-    opacity: 0.90,
-  },
-  highlight: {
-    position: 'absolute',
-    backgroundColor: 'rgba(255,255,255,0.52)',
-    transform: [{ rotate: '-22deg' }],
-  },
-  rimLight: {
-    position: 'absolute',
-    backgroundColor: 'rgba(255,255,255,0.20)',
-  },
   label: {
     flex: 1,
     textAlign: 'center',
     textAlignVertical: 'center',
-    color: '#fff',
-    fontFamily: 'Inter_400Regular',
+    color: '#374151',
+    fontFamily: 'Inter_300Light',
     fontWeight: '300' as const,
+    letterSpacing: 0.5,
     paddingHorizontal: 6,
-    // Center vertically
     alignSelf: 'center',
     marginTop: 'auto',
     marginBottom: 'auto',

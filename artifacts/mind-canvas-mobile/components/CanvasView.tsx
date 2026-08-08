@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Animated, Dimensions, PanResponder, StyleSheet, View } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { useBubbles } from '@/context/BubbleContext';
 import { BubbleNode } from '@/components/BubbleNode';
+import { CanvasBackground } from '@/components/CanvasBackground';
 import {
   getBubbleDisplaySize, isInThreeLayerView, relativeLayer,
-  LAYER_SIZES_OVERVIEW, LAYER_SIZES_FOCUSED,
+  LAYER_SIZES_OVERVIEW, LAYER_SIZES_FOCUSED, getAllDescendants,
 } from '@/lib/bubbleLayout';
 import { BubbleData } from '@/lib/bubbleTypes';
 
@@ -30,9 +30,10 @@ function toWorld(sx: number, sy: number, cam: Camera) {
   return { wx: (sx - cam.x) / cam.scale, wy: (sy - cam.y) / cam.scale };
 }
 
+// Match web constants exactly: overview maxScale=0.9 pad=90, focused maxScale=1.6 pad=110
 function fitBounds(
   minX: number, maxX: number, minY: number, maxY: number,
-  pad = 80, maxScale = 1.4,
+  pad = 90, maxScale = 0.9,
 ): Camera {
   const w = maxX - minX + pad * 2;
   const h = maxY - minY + pad * 2;
@@ -51,17 +52,14 @@ export default function CanvasView() {
   } = useBubbles();
 
   // ── Camera ──────────────────────────────────────────────────────────────────
-  // We store camera in a ref (for gesture math) AND in state (to trigger renders).
   const cameraRef = useRef<Camera>({ x: SW / 2, y: SH / 2, scale: INIT_SCALE });
   const [camera,  setCamera]  = useState<Camera>({ x: SW / 2, y: SH / 2, scale: INIT_SCALE });
 
-  // Apply camera instantly (e.g. during gesture)
   function applyCameraImmediate(cam: Camera) {
     cameraRef.current = cam;
     setCamera({ ...cam });
   }
 
-  // Animate camera toward target with spring-ish lerp via RAF
   const animFrameRef = useRef<number>(0);
   function animateCamera(target: Camera) {
     cancelAnimationFrame(animFrameRef.current);
@@ -105,72 +103,47 @@ export default function CanvasView() {
   const visibleRef = useRef(visibleBubbles); visibleRef.current = visibleBubbles;
 
   // ── Camera fit on focus change ───────────────────────────────────────────────
+  // Mirrors web fitLayout: include ALL visible three-layer nodes with their
+  // rendered radii (getBubbleDisplaySize) rather than only roots or direct children.
   useEffect(() => {
     const fid = focusedId;
     const all = bubblesRef.current;
     const bid = byIdRef.current;
 
-    if (!fid) {
-      const roots = all.filter(b => b.depth === 0);
-      if (!roots.length) return;
+    const visible = all.filter(b => isInThreeLayerView(b, fid, bid));
+    if (!visible.length) return;
 
-      // Compute bounding box of root centres (no bubble radius padding yet)
-      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-      roots.forEach(r => {
-        minX = Math.min(minX, r.x); maxX = Math.max(maxX, r.x);
-        minY = Math.min(minY, r.y); maxY = Math.max(maxY, r.y);
-      });
-
-      // Use a scale that shows everything at ~60 % fill, then push it 1.6× larger
-      // so bubbles feel big on-screen. Allow the outer roots to bleed off-edge —
-      // the user can pinch/pan to see them. Cap at 0.85 to avoid going crazy.
-      const span   = Math.max(maxX - minX, 1);
-      const spanY  = Math.max(maxY - minY, 1);
-      const fitS   = Math.min(SW / (span + 200), SH / (spanY + 200));
-      const overviewScale = Math.min(fitS * 1.6, 0.85);
-
-      const centX = (minX + maxX) / 2;
-      const centY = (minY + maxY) / 2;
-      animateCamera({
-        x:     SW / 2 - centX * overviewScale,
-        y:     SH / 2 - centY * overviewScale,
-        scale: overviewScale,
-      });
-      return;
-    }
-
-    const focused  = bid[fid];
-    if (!focused) return;
-    const children = all.filter(b => b.parentId === fid);
-
-    let minX = focused.x - LAYER_SIZES_FOCUSED[0] / 2;
-    let maxX = focused.x + LAYER_SIZES_FOCUSED[0] / 2;
-    let minY = focused.y - LAYER_SIZES_FOCUSED[0] / 2;
-    let maxY = focused.y + LAYER_SIZES_FOCUSED[0] / 2;
-    children.forEach(c => {
-      const s = LAYER_SIZES_FOCUSED[1] * (c.scale ?? 1) / 2;
-      minX = Math.min(minX, c.x - s); maxX = Math.max(maxX, c.x + s);
-      minY = Math.min(minY, c.y - s); maxY = Math.max(maxY, c.y + s);
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    visible.forEach(b => {
+      const r = getBubbleDisplaySize(b, fid, bid) / 2;
+      minX = Math.min(minX, b.x - r); maxX = Math.max(maxX, b.x + r);
+      minY = Math.min(minY, b.y - r); maxY = Math.max(maxY, b.y + r);
     });
-    animateCamera(fitBounds(minX, maxX, minY, maxY, 60, 1.3));
+
+    if (!fid) {
+      // Overview: web uses maxScale=0.9, padding=90
+      animateCamera(fitBounds(minX, maxX, minY, maxY, 90, 0.9));
+    } else {
+      // Focused: web uses maxScale=1.6, padding=110
+      animateCamera(fitBounds(minX, maxX, minY, maxY, 110, 1.6));
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusedId]);
 
   // ── Drag state ───────────────────────────────────────────────────────────────
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const draggingIdRef  = useRef<string | null>(null);
-  // Current dragged bubble world position (updated during drag)
   const dragWX = useRef(0);
   const dragWY = useRef(0);
   const dragBubbleRef = useRef<BubbleData | null>(null);
-  // Animated values for dragged bubble screen position (smooth on all platforms)
   const dragScreenX = useRef(new Animated.Value(0)).current;
   const dragScreenY = useRef(new Animated.Value(0)).current;
 
   // ── Gesture state ─────────────────────────────────────────────────────────────
-  const touchStart      = useRef({ x: 0, y: 0, time: 0 });
+  const touchStart       = useRef({ x: 0, y: 0, time: 0 });
   const cameraTouchStart = useRef({ x: 0, y: 0, scale: INIT_SCALE });
-  const pinchStart      = useRef<{ dist: number; scale: number; x: number; y: number } | null>(null);
+  // pinchStart stores the saved scale at grant time; dist/x/y update each frame
+  const pinchStart      = useRef<{ savedScale: number; dist: number; x: number; y: number } | null>(null);
   const bubbleDragStart = useRef({ wx: 0, wy: 0 });
   const isDraggingBubble = useRef(false);
 
@@ -201,20 +174,21 @@ export default function CanvasView() {
         cancelAnimationFrame(animFrameRef.current);
         const touches = evt.nativeEvent.touches;
         const t0 = touches[0];
-        touchStart.current      = { x: t0.pageX, y: t0.pageY, time: Date.now() };
+        touchStart.current       = { x: t0.pageX, y: t0.pageY, time: Date.now() };
         cameraTouchStart.current = { ...cameraRef.current };
-        pinchStart.current      = null;
+        pinchStart.current       = null;
         isDraggingBubble.current = false;
 
         if (touches.length >= 2) {
           draggingIdRef.current = null;
           const t1 = touches[1];
           const dx = t1.pageX - t0.pageX, dy = t1.pageY - t0.pageY;
+          const dist = Math.sqrt(dx * dx + dy * dy);
           pinchStart.current = {
-            dist:  Math.sqrt(dx * dx + dy * dy),
-            scale: cameraRef.current.scale,
-            x: cameraRef.current.x,
-            y: cameraRef.current.y,
+            savedScale: cameraRef.current.scale,
+            dist,
+            x: (t0.pageX + t1.pageX) / 2,
+            y: (t0.pageY + t1.pageY) / 2,
           };
           return;
         }
@@ -234,21 +208,41 @@ export default function CanvasView() {
       onPanResponderMove(evt) {
         const touches = evt.nativeEvent.touches;
 
-        if (touches.length >= 2 && pinchStart.current) {
+        if (touches.length >= 2) {
           const t0 = touches[0], t1 = touches[1];
           const dx = t1.pageX - t0.pageX, dy = t1.pageY - t0.pageY;
           const dist  = Math.sqrt(dx * dx + dy * dy);
-          const ratio = dist / pinchStart.current.dist;
-          const newS  = Math.max(MIN_SCALE, Math.min(MAX_SCALE, pinchStart.current.scale * ratio));
           const midX  = (t0.pageX + t1.pageX) / 2;
           const midY  = (t0.pageY + t1.pageY) / 2;
-          // Zoom around the midpoint: keep midpoint fixed in world space
+
+          if (!pinchStart.current) {
+            // Fingers joined mid-gesture: initialise from current state
+            pinchStart.current = {
+              savedScale: cameraRef.current.scale,
+              dist,
+              x: midX,
+              y: midY,
+            };
+            return;
+          }
+
+          // Scale relative to the saved scale at grant time, using current dist
+          const ratio = dist / pinchStart.current.dist;
+          const newS  = Math.max(MIN_SCALE, Math.min(MAX_SCALE, pinchStart.current.savedScale * ratio));
+
+          // Zoom around the current midpoint: keep that world point fixed
           const { wx: focWX, wy: focWY } = toWorld(midX, midY, cameraRef.current);
           const newCam: Camera = {
             x: midX - focWX * newS,
             y: midY - focWY * newS,
             scale: newS,
           };
+          // Update dist and midpoint each frame for continuous pinch+pan
+          pinchStart.current.dist = dist;
+          pinchStart.current.savedScale = newS;
+          pinchStart.current.x = midX;
+          pinchStart.current.y = midY;
+
           applyCameraImmediate(newCam);
           return;
         }
@@ -300,9 +294,30 @@ export default function CanvasView() {
         const dur  = Date.now() - touchStart.current.time;
 
         if (isDraggingBubble.current && draggingIdRef.current) {
-          updatePosRef.current(draggingIdRef.current, { x: dragWX.current, y: dragWY.current });
+          const draggedId = draggingIdRef.current;
+          const newX = dragWX.current;
+          const newY = dragWY.current;
+          const startX = bubbleDragStart.current.wx;
+          const startY = bubbleDragStart.current.wy;
+          const deltaX = newX - startX;
+          const deltaY = newY - startY;
+
+          // Move the dragged bubble
+          updatePosRef.current(draggedId, { x: newX, y: newY });
+
+          // Move all descendants by the same delta (subtree drag)
+          const allBubbles = bubblesRef.current;
+          const descendants = getAllDescendants(draggedId, allBubbles);
+          const bid = byIdRef.current;
+          descendants.forEach(descId => {
+            const desc = bid[descId];
+            if (desc) {
+              updatePosRef.current(descId, { x: desc.x + deltaX, y: desc.y + deltaY });
+            }
+          });
+
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-        } else if (dist < TAP_DIST && dur < TAP_MS) {
+        } else if (dist < TAP_DIST && dur < TAP_MS && !pinchStart.current) {
           if (draggingIdRef.current) {
             handleBubbleTap(draggingIdRef.current);
           } else {
@@ -363,18 +378,14 @@ export default function CanvasView() {
 
   return (
     <View style={styles.container} {...panResponder.panHandlers}>
-      {/* Background gradient layer — must be first so it sits behind bubbles */}
-      <LinearGradient
-        colors={['#FAFAFA', '#EEEEF2']}
-        start={{ x: 0.5, y: 0 }}
-        end={{ x: 0.5, y: 1 }}
-        style={StyleSheet.absoluteFill}
-        pointerEvents="none"
-      />
+      {/* SVG coordinate field background — sits behind all bubbles */}
+      <CanvasBackground camera={cam} screenWidth={SW} screenHeight={SH} />
+
       {/* Bubbles — rendered in screen space for Expo-Web compatibility */}
       {visibleBubbles.map(b => {
         if (draggingId === b.id) return null;
-        const size     = getBubbleDisplaySize(b, focusedId, byId) * cam.scale;
+        const worldDisplaySize = getBubbleDisplaySize(b, focusedId, byId);
+        const size     = worldDisplaySize * cam.scale;
         const layer    = relativeLayer(b.id, focusedId, byId);
         const { sx, sy } = toScreen(b.x, b.y, cam);
         return (
@@ -387,13 +398,15 @@ export default function CanvasView() {
             isFocused={b.id === focusedId}
             isSelected={editMode && editSelection === b.id}
             isGrandchild={layer === 2}
+            worldDisplaySize={worldDisplaySize}
           />
         );
       })}
 
       {/* Dragged bubble — uses Animated for butter-smooth movement */}
       {dragBubble && (() => {
-        const size = getBubbleDisplaySize(dragBubble, focusedId, byId) * cam.scale;
+        const worldDisplaySize = getBubbleDisplaySize(dragBubble, focusedId, byId);
+        const size = worldDisplaySize * cam.scale;
         return (
           <Animated.View
             style={[styles.dragBubble, {
@@ -411,6 +424,7 @@ export default function CanvasView() {
               isFocused={false}
               isSelected={false}
               isGrandchild={false}
+              worldDisplaySize={worldDisplaySize}
             />
           </Animated.View>
         );
