@@ -1,5 +1,9 @@
 # See https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files for more about ignoring files.
 
+# Runtime disk cache (API server map persistence)
+artifacts/api-server/map-cache.json
+artifacts/api-server/map-cache.json.tmp
+
 # compiled output
 dist
 tmp
