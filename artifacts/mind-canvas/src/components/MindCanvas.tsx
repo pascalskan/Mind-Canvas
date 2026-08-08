@@ -574,7 +574,10 @@ function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange
           onKeyDown={e => { if (e.key === 'Enter') onEditSave?.(); if (e.key === 'Escape') onEditCancel?.(); }}
           onPointerDown={e => e.stopPropagation()}
           className="relative z-20 bg-transparent text-center font-sans font-light text-gray-700 tracking-wide outline-none cursor-text select-text w-4/5"
-          style={{ fontSize, lineHeight: 1.15 }}/>
+          // iOS zooms into any input whose font-size is below 16px. Use the
+          // bubble-derived size but clamp it up to 16px so the canvas never
+          // involuntarily zooms the whole page on mobile.
+          style={{ fontSize: Math.max(fontSize, 16), lineHeight: 1.15 }}/>
       ) : (
         <div className="relative z-10 text-gray-700 font-sans font-light tracking-wide select-none text-center break-words"
           style={{ pointerEvents: onLabelClick ? 'auto' : 'none', fontSize, lineHeight: 1.15, maxWidth: '84%' }}
@@ -717,51 +720,60 @@ function BubbleEditPanel({ color, scale, isPillar, inheritedColor, existingColor
 
   return (
     <div className="absolute pointer-events-auto z-50"
-      style={{ top: 'calc(100% + 15px)', left: '50%', transform: 'translateX(-50%)', width: 220 }}
+      style={{
+        top: 'calc(100% + 15px)',
+        left: '50%',
+        transform: 'translateX(-50%)',
+        // Never overflow the viewport on narrow screens.
+        width: 'min(240px, calc(100vw - 32px))',
+      }}
       // Stop both ends of the press: the bubble underneath never captured this
       // pointer, so letting its pointer-up run would try to release one it does
       // not own.
       onPointerDown={e => e.stopPropagation()}
       onPointerUp={e => e.stopPropagation()}>
-      <div className="p-3.5"
+      <div className="p-4"
         style={{ background: 'rgba(255,255,255,.94)', backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)', borderRadius: 15, boxShadow: '0 8px 30px rgba(0,0,0,.12), inset 0 0 0 1px rgba(255,255,255,.95)' }}>
         {pending ? (
           <>
-            <p className="text-xs leading-relaxed font-light text-gray-500">
+            <p className="text-sm leading-relaxed font-light text-gray-500">
               This color is very close to an existing pillar. Use it anyway?
             </p>
             <div className="flex gap-2 justify-end mt-3">
-              <button className="text-xs text-gray-400 px-2 py-1" onClick={() => setPending(null)}>Change</button>
-              <button className="text-xs text-white rounded-full px-3 py-1" style={{ background: pending }}
+              {/* min 44px touch target via py-3 */}
+              <button className="text-sm text-gray-400 px-4 py-3" onClick={() => setPending(null)}>Change</button>
+              <button className="text-sm text-white rounded-full px-4 py-3" style={{ background: pending }}
                 onClick={() => { onChoose(pending); setPending(null); }}>Use anyway</button>
             </div>
           </>
         ) : (
           <>
-            <div className="flex items-baseline justify-between mb-2.5">
-              <p className="text-[10px] uppercase tracking-widest font-light text-gray-400">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-xs uppercase tracking-widest font-light text-gray-400">
                 {isPillar ? 'Pillar color' : 'Bubble color'}
               </p>
               {!isPillar && onResetColor && inheritedColor && color !== inheritedColor && (
-                <button className="text-[10px] font-light text-gray-400 hover:text-gray-600 transition-colors"
+                // Wider tap target: negative margin keeps visual layout unchanged
+                <button className="text-xs font-light text-gray-400 active:text-gray-600 px-2 py-2 -my-2 -mr-2"
                   onClick={onResetColor}>reset</button>
               )}
             </div>
+            {/* 44px swatches fit 4-per-row in 240px panel */}
             <div className="grid grid-cols-4 gap-2">
               {PILLAR_COLORS.map(option => (
                 <button key={option} aria-label={`Choose ${option}`} onClick={() => choose(option)}
-                  className="rounded-full transition-transform hover:scale-110"
-                  style={{ width: 34, height: 34, background: option, boxShadow: color === option ? '0 0 0 3px #fff, 0 0 0 5px rgba(90,90,100,.4)' : 'inset 0 1px 2px rgba(255,255,255,.5)' }} />
+                  className="rounded-full active:scale-95 transition-transform"
+                  style={{ width: 44, height: 44, background: option, boxShadow: color === option ? '0 0 0 3px #fff, 0 0 0 5px rgba(90,90,100,.4)' : 'inset 0 1px 2px rgba(255,255,255,.5)' }} />
               ))}
             </div>
 
             <div className="mt-3.5 pt-3 border-t border-gray-100">
-              <p className="text-[10px] uppercase tracking-widest font-light text-gray-400 mb-2">Size</p>
+              <p className="text-xs uppercase tracking-widest font-light text-gray-400 mb-2">Size</p>
               <select
                 value={String(Math.round(scale * 10) / 10)}
                 onChange={e => onScale(Number(e.target.value))}
-                className="w-full bg-transparent text-sm font-light text-gray-600 outline-none cursor-pointer"
-                style={{ border: '1px solid #e5e7eb', borderRadius: 9, padding: '5px 8px' }}>
+                className="w-full bg-transparent text-base font-light text-gray-600 outline-none cursor-pointer"
+                style={{ border: '1px solid #e5e7eb', borderRadius: 9, padding: '10px 8px', minHeight: 44 }}>
                 {SCALE_OPTIONS.map(option => (
                   <option key={option} value={String(option)}>{Math.round(option * 100)}%</option>
                 ))}
@@ -864,18 +876,17 @@ function AddPanel({ bubbles, onAdd, onClose, initialParentPath = [], quickCreate
     onClose();
   };
 
-  // A real <button>, not a styled <div onClick>: divs that only react to
-  // :hover/onClick are the classic iOS Safari trap where the first tap just
-  // registers the hover state and only a second tap actually fires the click.
-  // py-1.5 -my-1.5 widens the tap target without shifting the visible layout.
+  // A real <button> with a generous py so the touch target reaches 44px without
+  // shifting the visible layout. Negative margin cancels out the extra padding
+  // so rows don't add gaps between themselves.
   const Row = ({ text, selected, onSelect, dim }: { text: string; selected: boolean; onSelect: () => void; dim?: boolean }) => (
     <button type="button" onClick={onSelect}
-      className="w-full flex items-center gap-2 cursor-pointer group py-1.5 -my-1.5 text-left">
-      <div className="w-3 h-3 rounded-full border flex items-center justify-center flex-shrink-0 transition-all"
+      className="w-full flex items-center gap-3 cursor-pointer py-3 -my-0 text-left">
+      <div className="w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-all"
         style={{ borderColor: selected ? '#9ca3af' : '#d1d5db', background: selected ? '#9ca3af' : 'transparent' }}>
-        {selected && <div className="w-1.5 h-1.5 rounded-full bg-white"/>}
+        {selected && <div className="w-2 h-2 rounded-full bg-white"/>}
       </div>
-      <span className={`text-sm font-light transition-colors ${dim ? 'text-gray-400' : 'text-gray-500'} group-hover:text-gray-700`}>{text}</span>
+      <span className={`text-base font-light ${dim ? 'text-gray-400' : 'text-gray-600'}`}>{text}</span>
     </button>
   );
 
@@ -885,10 +896,10 @@ function AddPanel({ bubbles, onAdd, onClose, initialParentPath = [], quickCreate
       transition={{ type: 'spring', stiffness: 260, damping: 22 }}
       className="absolute z-50 pointer-events-auto"
       style={anchor ? {
-        width: 292,
-        left: Math.max(16, Math.min(anchor.x + 44, window.innerWidth - 308)),
+        width: Math.min(292, window.innerWidth - 32),
+        left: Math.max(16, Math.min(anchor.x + 44, window.innerWidth - Math.min(292, window.innerWidth - 32) - 16)),
         top: Math.max(16, Math.min(anchor.y - 120, window.innerHeight - 290)),
-      } : { width: 292, top: stableTop.current, right: 24 }}
+      } : { width: Math.min(292, window.innerWidth - 32), top: stableTop.current, right: 16 }}
       onPointerDown={e => e.stopPropagation()}>
       <div className="p-5"
         style={{ background: 'rgba(255,255,255,.88)', backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)', borderRadius: 18, boxShadow: '0 8px 40px rgba(0,0,0,.08),inset 0 0 0 1px rgba(255,255,255,.9)' }}>
@@ -897,9 +908,10 @@ function AddPanel({ bubbles, onAdd, onClose, initialParentPath = [], quickCreate
           {quickCreate ? 'Name new bubble' : 'New bubble'}
         </p>
 
+        {/* text-base (16px) prevents iOS from zooming the viewport when this input is focused */}
         <input placeholder="Label…" value={label} onChange={e => setLabel(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') onClose(); }}
-          className="w-full bg-transparent border-b border-gray-200 text-gray-700 font-light text-sm outline-none pb-1 mb-4 placeholder-gray-300"/>
+          className="w-full bg-transparent border-b border-gray-200 text-gray-700 font-light text-base outline-none py-2 mb-4 placeholder-gray-300"/>
 
         {!quickCreate && <div ref={levelsRef} className="overflow-y-auto pr-1 -mr-1"
           style={{ maxHeight: LIST_MAX_H }}>
@@ -944,9 +956,10 @@ function AddPanel({ bubbles, onAdd, onClose, initialParentPath = [], quickCreate
         </div>
 
         <div className="flex gap-2 justify-end">
-          <button onClick={cancel} className="text-xs font-light text-gray-400 hover:text-gray-600 transition-colors px-3 py-1.5">Cancel</button>
+          {/* py-3 ensures 44px touch target height */}
+          <button onClick={cancel} className="text-sm font-light text-gray-400 active:text-gray-600 transition-colors px-4 py-3">Cancel</button>
           <button onClick={submit} disabled={!label.trim() || atMax}
-            className="text-xs font-light text-white px-4 py-1.5 rounded-full transition-opacity disabled:opacity-30"
+            className="text-sm font-light text-white px-5 py-3 rounded-full transition-opacity disabled:opacity-30"
             style={{ background: 'rgba(100,100,120,.7)' }}>
             Add
           </button>
@@ -1450,9 +1463,10 @@ export default function MindCanvas() {
     backdropFilter: 'blur(16px)',
     WebkitBackdropFilter: 'blur(16px)',
     borderRadius: 24,
-    padding: '9px 18px',
+    // 13px vertical padding → ~43px total height with text, meeting 44px touch target.
+    padding: '13px 20px',
     boxShadow: '0 4px 24px rgba(0,0,0,.07),inset 0 0 0 1px rgba(255,255,255,.9)',
-    fontSize: 13,
+    fontSize: 14,
   };
 
   const breadcrumb = focusedId
@@ -1472,9 +1486,9 @@ export default function MindCanvas() {
       {/* Edit mode banner */}
       {editMode && (
         <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
-          className="absolute top-5 left-1/2 -translate-x-1/2 z-50 pointer-events-none select-none"
-          style={{ background: 'rgba(255,255,255,.84)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 20, padding: '6px 18px', boxShadow: '0 2px 16px rgba(0,0,0,.06),inset 0 0 0 1px rgba(130,110,180,.25)', fontSize: 12, color: 'hsl(260,40%,50%)', letterSpacing: '.04em', fontWeight: 300 }}>
-          Edit mode · double-click a bubble to lock it · click its name to rename · set color &amp; size below · × deletes
+          className="absolute top-5 left-1/2 -translate-x-1/2 z-50 pointer-events-none select-none text-center"
+          style={{ background: 'rgba(255,255,255,.84)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 20, padding: '8px 18px', boxShadow: '0 2px 16px rgba(0,0,0,.06),inset 0 0 0 1px rgba(130,110,180,.25)', fontSize: 12, color: 'hsl(260,40%,50%)', letterSpacing: '.04em', fontWeight: 300, maxWidth: 'calc(100vw - 32px)' }}>
+          Edit mode · double-tap to lock · tap name to rename · × deletes
         </motion.div>
       )}
 
@@ -1599,12 +1613,17 @@ export default function MindCanvas() {
               )}
 
               {showDelete && (
+                // Visual circle stays small but the real tap target is 44×44
+                // via padding so it's easy to hit on touch screens.
                 <motion.button initial={{ opacity: 0, scale: .7 }} animate={{ opacity: 1, scale: 1 }}
-                  className="absolute flex items-center justify-center rounded-full pointer-events-auto"
-                  style={{ width: 22, height: 22, right: -4, top: -4, background: 'rgba(255,255,255,.94)', boxShadow: '0 1px 6px rgba(0,0,0,.14)', color: '#aaa', fontSize: 14, lineHeight: 1, backdropFilter: 'blur(4px)', zIndex: 300 }}
+                  className="absolute flex items-center justify-center pointer-events-auto"
+                  style={{ width: 44, height: 44, right: -14, top: -14, zIndex: 300 }}
                   onPointerDown={e => e.stopPropagation()}
                   onClick={e => { e.stopPropagation(); deleteBubble(bubble.id); }}>
-                  ×
+                  <span className="flex items-center justify-center rounded-full"
+                    style={{ width: 22, height: 22, background: 'rgba(255,255,255,.94)', boxShadow: '0 1px 6px rgba(0,0,0,.14)', color: '#aaa', fontSize: 14, lineHeight: 1, backdropFilter: 'blur(4px)' }}>
+                    ×
+                  </span>
                 </motion.button>
               )}
             </motion.div>
@@ -1614,9 +1633,9 @@ export default function MindCanvas() {
 
       {/* Hint */}
       {!focusedId && !editMode && !quickCreate && (
-        <motion.p className="absolute bottom-8 left-1/2 -translate-x-1/2 text-gray-400 font-light text-xs tracking-widest pointer-events-none select-none"
+        <motion.p className="absolute bottom-8 left-1/2 -translate-x-1/2 text-gray-400 font-light text-xs tracking-widest pointer-events-none select-none whitespace-nowrap"
           initial={{ opacity: 0 }} animate={{ opacity: .4 }} transition={{ delay: 1.5, duration: 1.5 }}>
-          click to enter · shift-click to create a child
+          tap to enter · + to add bubbles
         </motion.p>
       )}
 
