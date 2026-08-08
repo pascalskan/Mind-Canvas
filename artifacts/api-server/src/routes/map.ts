@@ -1,8 +1,40 @@
 import { Router, type IRouter } from 'express';
 import { db, mindCanvasMapTable } from '@workspace/db';
 import { eq } from 'drizzle-orm';
+import fs from 'fs';
+import path from 'path';
 
 const router: IRouter = Router();
+
+// ---------------------------------------------------------------------------
+// Disk cache
+//
+// A local JSON file that survives server restarts. Written on every successful
+// DB read or write so the server can serve something sensible when Postgres is
+// unreachable at cold start.
+// ---------------------------------------------------------------------------
+
+const DISK_CACHE_PATH = path.resolve(process.cwd(), 'map-cache.json');
+
+function readDiskCache(): unknown | null {
+  try {
+    const raw = fs.readFileSync(DISK_CACHE_PATH, 'utf8');
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function writeDiskCache(data: unknown): void {
+  const tmp = `${DISK_CACHE_PATH}.tmp`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(data), 'utf8');
+    fs.renameSync(tmp, DISK_CACHE_PATH);
+  } catch (err) {
+    console.error('map-cache: failed to write disk cache:', err);
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // State
@@ -186,10 +218,21 @@ router.get('/map', async (_req, res) => {
     if (latestKnown === null || latestKnown.gen <= committedGeneration) {
       latestKnown = { gen: committedGeneration, data: dbData };
     }
+    writeDiskCache(dbData);
     res.json(dbData);
   } catch (err) {
     console.error('GET /api/map: database unreachable, serving cached value. Error:', err);
-    res.json(latestKnown !== null ? latestKnown.data : null);
+    // Fall back to in-memory cache, then disk cache.
+    if (latestKnown !== null) {
+      res.json(latestKnown.data);
+    } else {
+      const diskData = readDiskCache();
+      if (diskData !== null) {
+        console.info('GET /api/map: serving disk cache fallback.');
+        latestKnown = { gen: 0, data: diskData };
+      }
+      res.json(diskData);
+    }
   }
 });
 
@@ -210,6 +253,10 @@ router.put('/map', async (req, res) => {
   if (latestKnown === null || myGen > latestKnown.gen) {
     latestKnown = { gen: myGen, data };
   }
+
+  // Persist to disk before touching the database so this data survives a
+  // server restart even if the DB write never completes.
+  writeDiskCache(data);
 
   const err = await enqueueWrite(myGen, data);
   if (err === null) {
