@@ -827,6 +827,106 @@ describe('color changes — setBubbles → persistence', () => {
   });
 });
 
+// ─── Color ↔ drag interleaving ────────────────────────────────────────────────
+// A setBubbles updater that writes drag fields (x/y or angle/radial) runs on
+// the *current* state snapshot.  If the color change that preceded it used a
+// stale snapshot, the updated color would be silently overwritten.  These tests
+// catch that class of bug.
+
+describe('color ↔ drag interleaving — color survives a subsequent drag', () => {
+  it('color change on root bubble is preserved after an immediate root drag', async () => {
+    const { result } = renderBubbleState();
+    const NEW_COLOR = 'hsl(30,80%,55%)';
+
+    // 1. Re-color r0.
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => b.id === 'r0' ? { ...b, color: NEW_COLOR } : b),
+      );
+    });
+
+    // 2. Immediately drag r0 (simulates the user grabbing the bubble right
+    //    after picking a color).
+    const sdx = 120, sdy = -80;
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => b.id === 'r0' ? applyRootDrag(b, b.x, b.y, sdx, sdy) : b),
+      );
+    });
+
+    const saved = readStorage();
+    const r0 = saved.find(b => b.id === 'r0')!;
+    // Color must survive the drag update.
+    expect(r0.color).toBe(NEW_COLOR);
+    // Position must also be updated correctly.
+    expect(r0.x).toBeCloseTo(SEED[0].x + sdx);
+    expect(r0.y).toBeCloseTo(SEED[0].y + sdy);
+  });
+
+  it('color change on child bubble is preserved after an immediate child drag', async () => {
+    const { result } = renderBubbleState();
+    const NEW_COLOR = 'hsl(200,65%,50%)';
+
+    // 1. Re-color c1.
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => b.id === 'c1' ? { ...b, color: NEW_COLOR } : b),
+      );
+    });
+
+    // 2. Immediately drag c1.
+    const originRx = 220, originRy = 10, sdx = 60, sdy = 80;
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b =>
+          b.id === 'c1'
+            ? applyChildDrag(b, originRx, originRy, sdx, sdy, PARENT_POS, MOCK_BAND)
+            : b,
+        ),
+      );
+    });
+
+    const saved = readStorage();
+    const c1 = saved.find(b => b.id === 'c1')!;
+    // Color must survive the drag update.
+    expect(c1.color).toBe(NEW_COLOR);
+    // Drag fields must also be written.
+    const expected = applyChildDrag(
+      result.current.bubbles.find(b => b.id === 'c1')!,
+      originRx, originRy, sdx, sdy, PARENT_POS, MOCK_BAND,
+    );
+    expect(c1.angle).toBeCloseTo(expected.angle!);
+    expect(c1.radial).toBeCloseTo(expected.radial!);
+  });
+
+  it('drag followed by a color change: final color wins in localStorage', async () => {
+    const { result } = renderBubbleState();
+    const FINAL_COLOR = 'hsl(340,75%,60%)';
+
+    // 1. Drag r0 first.
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => b.id === 'r0' ? applyRootDrag(b, b.x, b.y, 50, 50) : b),
+      );
+    });
+
+    // 2. Then change the color.
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => b.id === 'r0' ? { ...b, color: FINAL_COLOR } : b),
+      );
+    });
+
+    const saved = readStorage();
+    const r0 = saved.find(b => b.id === 'r0')!;
+    // Final color must win.
+    expect(r0.color).toBe(FINAL_COLOR);
+    // Drag must also be preserved.
+    expect(r0.x).toBeCloseTo(SEED[0].x + 50);
+    expect(r0.y).toBeCloseTo(SEED[0].y + 50);
+  });
+});
+
 // ─── Combined sequences ───────────────────────────────────────────────────────
 
 describe('combined add → rename → delete sequences', () => {
