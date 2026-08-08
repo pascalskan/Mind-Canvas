@@ -71,7 +71,16 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
       setLoaded(true);
       fetchFromCloud()
         .then(cloud => {
-          if (cloud) setBubbles(cloud);
+          if (!cloud) return;
+          // Resolve overlaps caused by web positions being laid out for smaller
+          // display radii — mobile uses larger LAYER_SIZES so bubbles pile up.
+          const bid2 = Object.fromEntries(cloud.map(b => [b.id, b]));
+          const resolved = resolveCollisions(cloud, null, bid2, null, 6);
+          if (Object.keys(resolved).length > 0) {
+            setBubbles(cloud.map(b => resolved[b.id] ? { ...b, ...resolved[b.id] } : b));
+          } else {
+            setBubbles(cloud);
+          }
         })
         .finally(() => {
           // Allow cloud pushes only after we've had a chance to pull first

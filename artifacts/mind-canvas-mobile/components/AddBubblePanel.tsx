@@ -62,9 +62,23 @@ export default function AddBubblePanel({ onClose, initialParentId }: Props) {
     dismiss();
   };
 
-  // Build the parent chip list: always include "Root level" + all roots.
-  // If initialParentId points to a non-root bubble, prepend it as a special chip.
-  const roots         = bubbles.filter(b => b.depth === 0);
+  // Build the full parent list: depth-first walk, excluding bubbles at MAX_DEPTH
+  // (they can't have children). Each entry carries a depth for indentation.
+  const parentOptions = React.useMemo(() => {
+    const result: { bubble: BubbleData; depth: number }[] = [];
+    function walk(parentId: string | null, depth: number) {
+      const children = bubbles
+        .filter(b => (b.parentId ?? null) === parentId)
+        .sort((a, b) => a.label.localeCompare(b.label));
+      for (const b of children) {
+        result.push({ bubble: b, depth });
+        if (b.depth < MAX_DEPTH) walk(b.id, depth + 1);
+      }
+    }
+    walk(null, 0);
+    return result.filter(({ bubble }) => bubble.depth < MAX_DEPTH);
+  }, [bubbles]);
+
   const initialParent = initialParentId ? byId[initialParentId] : null;
   const showSpecial   = initialParent && initialParent.depth > 0;
 
@@ -116,23 +130,15 @@ export default function AddBubblePanel({ onClose, initialParentId }: Props) {
             onPress={() => { setParentId(null); setColor(PILLAR_COLORS[0]); }}
           />
 
-          {/* Special chip for the long-pressed non-root bubble */}
-          {showSpecial && initialParent && (
+          {/* Full tree — every bubble that can accept children */}
+          {parentOptions.map(({ bubble: b, depth }) => (
             <ParentChip
-              label={`↳ ${initialParent.label}`}
-              color={initialParent.color}
-              selected={parentId === initialParent.id}
-              onPress={() => { setParentId(initialParent.id); setColor(initialParent.color); }}
-            />
-          )}
-
-          {roots.map(r => (
-            <ParentChip
-              key={r.id}
-              label={r.label}
-              color={r.color}
-              selected={parentId === r.id}
-              onPress={() => { setParentId(r.id); setColor(r.color); }}
+              key={b.id}
+              label={b.label}
+              color={b.color}
+              depth={depth}
+              selected={parentId === b.id}
+              onPress={() => { setParentId(b.id); setColor(b.color); Haptics.selectionAsync(); }}
             />
           ))}
         </ScrollView>
@@ -205,19 +211,21 @@ export default function AddBubblePanel({ onClose, initialParentId }: Props) {
 }
 
 function ParentChip({
-  label, color, selected, onPress,
-}: { label: string; color: string; selected: boolean; onPress: () => void }) {
+  label, color, depth = 0, selected, onPress,
+}: { label: string; color: string; depth?: number; selected: boolean; onPress: () => void }) {
+  const prefix = depth > 0 ? '›'.repeat(depth) + ' ' : '';
   return (
     <TouchableOpacity
       style={[
         styles.parentChip,
-        { borderColor: color, backgroundColor: selected ? color : 'transparent' },
+        { borderColor: color, backgroundColor: selected ? color : 'transparent',
+          marginLeft: depth * 4 },
       ]}
       onPress={onPress}
       activeOpacity={0.75}
     >
       <Text style={[styles.parentChipText, { color: selected ? '#fff' : color }]}>
-        {label}
+        {prefix}{label}
       </Text>
     </TouchableOpacity>
   );
