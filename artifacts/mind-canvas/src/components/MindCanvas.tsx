@@ -1025,6 +1025,14 @@ export default function MindCanvas() {
   const [showColorPicker, setShowColorPicker] = useState(false);
   const [saveFailedToast,  setSaveFailedToast]  = useState(false);
   const [storageNearLimit, setStorageNearLimit] = useState(false);
+  // null  = not dismissed this session (banner shows when storageNearLimit is true)
+  // number = bytes at time of dismiss; banner re-appears if bytes grow beyond this
+  const [dismissedAtBytes, setDismissedAtBytes] = useState<number | null>(() => {
+    try {
+      const v = sessionStorage.getItem('mc_storageWarnDismissed');
+      return v !== null ? Number(v) : null;
+    } catch { return null; }
+  });
   const saveToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1117,6 +1125,10 @@ export default function MindCanvas() {
       setSaveFailedToast(true);
       if (saveToastTimer.current) clearTimeout(saveToastTimer.current);
       saveToastTimer.current = setTimeout(() => setSaveFailedToast(false), 5000);
+      // Re-arm the storage warning so it reappears alongside the save-failed toast
+      // once the toast clears — the user may not have noticed the earlier banner.
+      setDismissedAtBytes(null);
+      try { sessionStorage.removeItem('mc_storageWarnDismissed'); } catch { /* ignore */ }
     } else {
       // Show a persistent warning banner when payload crosses 80 % of the
       // estimated 5 MB localStorage quota. Clear it automatically when the
@@ -1642,14 +1654,26 @@ export default function MindCanvas() {
         </motion.div>
       )}
 
-      {/* Storage-near-limit banner — persistent, auto-clears when usage drops.
+      {/* Storage-near-limit banner — dismissible per session; re-appears if usage
+          grows beyond the bytes recorded at dismissal, or when a save fails.
           Sits below the breadcrumb row (top-5) so the two never collide. */}
-      {storageNearLimit && !saveFailedToast && (
+      {storageNearLimit && !saveFailedToast &&
+        (dismissedAtBytes === null || lastSave.bytes > dismissedAtBytes) && (
         <motion.div
           initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}
-          className="absolute top-14 left-1/2 -translate-x-1/2 z-50 pointer-events-none select-none text-center"
-          style={{ background: 'rgba(255,251,235,.95)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 20, padding: '9px 20px', boxShadow: '0 2px 20px rgba(0,0,0,.08),inset 0 0 0 1px rgba(180,140,30,.25)', fontSize: 12, color: 'hsl(38,60%,32%)', letterSpacing: '.03em', fontWeight: 300, maxWidth: 'calc(100vw - 32px)', whiteSpace: 'nowrap' }}>
-          ☁ Your map is getting large — consider exporting or clearing unused branches
+          className="absolute top-14 left-1/2 -translate-x-1/2 z-50 select-none text-center flex items-center gap-2"
+          style={{ background: 'rgba(255,251,235,.95)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 20, padding: '9px 16px 9px 20px', boxShadow: '0 2px 20px rgba(0,0,0,.08),inset 0 0 0 1px rgba(180,140,30,.25)', fontSize: 12, color: 'hsl(38,60%,32%)', letterSpacing: '.03em', fontWeight: 300, maxWidth: 'calc(100vw - 32px)', whiteSpace: 'nowrap' }}>
+          <span>☁ Your map is getting large — consider exporting or clearing unused branches</span>
+          <button
+            onPointerDown={e => e.stopPropagation()}
+            onClick={() => {
+              const bytes = lastSave.bytes;
+              setDismissedAtBytes(bytes);
+              try { sessionStorage.setItem('mc_storageWarnDismissed', String(bytes)); } catch { /* ignore */ }
+            }}
+            style={{ marginLeft: 4, padding: '2px 8px', borderRadius: 12, border: '1px solid rgba(180,140,30,.35)', background: 'rgba(255,255,255,.5)', color: 'hsl(38,55%,30%)', fontSize: 11, cursor: 'pointer', fontWeight: 400, letterSpacing: '.02em', lineHeight: 1.6 }}>
+            Got it
+          </button>
         </motion.div>
       )}
 
