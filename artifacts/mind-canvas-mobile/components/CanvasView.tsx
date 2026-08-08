@@ -6,7 +6,7 @@ import { BubbleNode } from '@/components/BubbleNode';
 import { CanvasBackground } from '@/components/CanvasBackground';
 import {
   getBubbleDisplaySize, isInThreeLayerView, relativeLayer,
-  getAllDescendants, resolveCollisions,
+  getAllDescendants, resolveCollisions, ringRadius,
 } from '@/lib/bubbleLayout';
 import { BubbleData } from '@/lib/bubbleTypes';
 
@@ -42,6 +42,8 @@ function fitBounds(
 }
 
 function lerp(a: number, b: number, t: number) { return a + (b - a) * t; }
+
+const PHYS_GAP = 12;       // min gap between bubble edges, world units
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -101,6 +103,81 @@ export default function CanvasView({ onLongPressAddChild }: Props) {
   const setFocusedRef = useRef(setFocusedId); setFocusedRef.current = setFocusedId;
   const setEditSelRef = useRef(setEditSelection); setEditSelRef.current = setEditSelection;
   const onLongPressRef = useRef(onLongPressAddChild); onLongPressRef.current = onLongPressAddChild;
+
+  // ── Physics collision resolution ─────────────────────────────────────────────
+  // Working positions during animation; seeded once when a single bubble is
+  // added, then settled frame-by-frame by the collision resolver.
+  const physicsPos    = useRef<Record<string, { x: number; y: number }>>({});
+  const physicsRaf    = useRef(0);
+  const prevBubbleIds = useRef<Set<string>>(new Set());
+
+  // Trigger a re-render each physics frame without heavy state churn.
+  const [, forcePhysicsTick] = React.useReducer((n: number) => n + 1, 0);
+
+  useEffect(() => {
+    const currentIds = new Set(bubbles.map(b => b.id));
+    const prev       = prevBubbleIds.current;
+
+    // Only run physics when exactly ONE new bubble was added and nothing removed.
+    // Bulk loads (hydration, import) or deletions are excluded.
+    const addedIds     = [...currentIds].filter(id => !prev.has(id));
+    const removedCount = [...prev].filter(id => !currentIds.has(id)).length;
+    prevBubbleIds.current = currentIds;
+
+    if (addedIds.length !== 1 || removedCount !== 0) return;
+
+    // Seed working positions from current bubble state.
+    const pos: Record<string, { x: number; y: number }> = {};
+    for (const b of bubbles) pos[b.id] = { x: b.x, y: b.y };
+    physicsPos.current = pos;
+    cancelAnimationFrame(physicsRaf.current);
+
+    let frame = 0;
+
+    function commitAndClear() {
+      const cur = bubblesRef.current;
+      const p   = physicsPos.current;
+      const updates: { id: string; x: number; y: number }[] = [];
+      for (const b of cur) {
+        const np = p[b.id];
+        if (np && (Math.abs(np.x - b.x) > 0.5 || Math.abs(np.y - b.y) > 0.5)) {
+          updates.push({ id: b.id, x: np.x, y: np.y });
+        }
+      }
+      if (updates.length) batchUpdateRef.current(updates);
+      physicsPos.current = {};
+    }
+
+    const tick = () => {
+      frame++;
+      const cur      = bubblesRef.current;
+      const bid      = byIdRef.current;
+      const p        = physicsPos.current;
+      const dragging = draggingIdRef.current;
+
+      const maxDisp = resolveCollisionsStep(cur, p, bid, focusedIdRef.current, dragging);
+      forcePhysicsTick();
+
+      if (maxDisp < PHYS_SETTLE || frame >= PHYS_MAX_FRAMES) {
+        commitAndClear();
+        return;
+      }
+      physicsRaf.current = requestAnimationFrame(tick);
+    };
+
+    physicsRaf.current = requestAnimationFrame(tick);
+
+    return () => {
+      cancelAnimationFrame(physicsRaf.current);
+      // Commit only when physicsPos is non-empty. onPanResponderGrant clears
+      // it eagerly on drag start so cleanup sees an empty map on drag-end and
+      // cannot overwrite the dropped position.
+      if (Object.keys(physicsPos.current).length > 0) {
+        commitAndClear();
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bubbles]);
 
   // ── Visible bubbles ──────────────────────────────────────────────────────────
   const visibleBubbles = useMemo(
@@ -163,18 +240,22 @@ export default function CanvasView({ onLongPressAddChild }: Props) {
   const bubbleDragStart  = useRef({ wx: 0, wy: 0 });
   const isDraggingBubble = useRef(false);
 
-  // Hit test
+  // Hit test — reads physicsPos so tap targets match animated positions.
   function hitTest(sx: number, sy: number): string | null {
-    const cam = cameraRef.current;
+    const cam   = cameraRef.current;
     const { wx, wy } = toWorld(sx, sy, cam);
-    const vis = visibleRef.current;
-    const fid = focusedIdRef.current;
-    const bid = byIdRef.current;
+    const vis   = visibleRef.current;
+    const fid   = focusedIdRef.current;
+    const bid   = byIdRef.current;
+    const physP = physicsPos.current;
     for (let i = vis.length - 1; i >= 0; i--) {
       const b    = vis[i];
+      const phys = physP[b.id];
+      const bx   = phys ? phys.x : b.x;
+      const by   = phys ? phys.y : b.y;
       const size = getBubbleDisplaySize(b, fid, bid);
       const r    = size / 2;
-      const dx   = wx - b.x, dy = wy - b.y;
+      const dx   = wx - bx, dy = wy - by;
       if (dx * dx + dy * dy <= r * r) return b.id;
     }
     return null;
@@ -222,12 +303,35 @@ export default function CanvasView({ onLongPressAddChild }: Props) {
         const hit = hitTest(t0.pageX, t0.pageY);
         draggingIdRef.current = hit;
 
+        // Cancel physics and commit partial sibling displacements (excluding the
+        // dragged bubble) BEFORE deriving drag coordinates — prevents the
+        // [bubbles] cleanup from overwriting the dropped position.
+        cancelAnimationFrame(physicsRaf.current);
+        const oldPhysics = physicsPos.current;
+        physicsPos.current = {};
+        if (Object.keys(oldPhysics).length > 0) {
+          const cur = bubblesRef.current;
+          const updates: { id: string; x: number; y: number }[] = [];
+          for (const b of cur) {
+            if (b.id === hit) continue;
+            const np = oldPhysics[b.id];
+            if (np && (Math.abs(np.x - b.x) > 0.5 || Math.abs(np.y - b.y) > 0.5)) {
+              updates.push({ id: b.id, x: np.x, y: np.y });
+            }
+          }
+          if (updates.length) batchUpdateRef.current(updates);
+        }
+
         if (hit) {
           const b = byIdRef.current[hit];
           if (b) {
-            bubbleDragStart.current = { wx: b.x, wy: b.y };
-            dragWX.current = b.x;
-            dragWY.current = b.y;
+            // Use physics position as drag origin so the bubble doesn't jump.
+            const physHit = oldPhysics[hit];
+            const startX  = physHit ? physHit.x : b.x;
+            const startY  = physHit ? physHit.y : b.y;
+            bubbleDragStart.current = { wx: startX, wy: startY };
+            dragWX.current = startX;
+            dragWY.current = startY;
           }
 
           // Long-press fires after LONG_PRESS_MS without movement
@@ -470,7 +574,11 @@ export default function CanvasView({ onLongPressAddChild }: Props) {
         const worldDisplaySize = getBubbleDisplaySize(b, focusedId, byId);
         const size  = worldDisplaySize * cam.scale;
         const layer = relativeLayer(b.id, focusedId, byId);
-        const { sx, sy } = toScreen(b.x, b.y, cam);
+        // Use physics working position during animation; fall back to stored.
+        const phys  = physicsPos.current[b.id];
+        const wx    = phys ? phys.x : b.x;
+        const wy    = phys ? phys.y : b.y;
+        const { sx, sy } = toScreen(wx, wy, cam);
         return (
           <BubbleNode
             key={b.id}
@@ -584,3 +692,98 @@ const styles = StyleSheet.create({
     zIndex: 150,
   },
 });
+
+const PHYS_SPRING = 0.4;   // fraction of overlap to resolve per frame (spring feel)
+
+const PHYS_MAX_FRAMES = 90; // ~1.5 s safety timeout
+
+const PHYS_SETTLE = 0.3;   // max displacement (world units) before settling
+
+function resolveCollisionsStep(
+  bubbles: BubbleData[],
+  pos: Record<string, { x: number; y: number }>,
+  byId: Record<string, BubbleData>,
+  focusedId: string | null,
+  immovableId: string | null,
+  iterations = 4,
+): number {
+  let maxDisp = 0;
+  const n = bubbles.length;
+
+  // Pre-compute display radii once per frame — they are the visual radii the
+  // user sees, so overlap must be resolved in that same coordinate system.
+  const radii: Record<string, number> = {};
+  for (const b of bubbles) {
+    radii[b.id] = getBubbleDisplaySize(b, focusedId, byId) / 2;
+  }
+
+  for (let iter = 0; iter < iterations; iter++) {
+    // — pairwise separation (only same-parent siblings collide) —
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const a = bubbles[i], b = bubbles[j];
+        // Only collide same-parent siblings. Roots (no parentId) are excluded:
+        // `undefined === undefined` would incorrectly treat them as siblings.
+        if (!a.parentId || a.parentId !== b.parentId) continue;
+        const pa = pos[a.id], pb = pos[b.id];
+        if (!pa || !pb) continue;
+
+        const ra = radii[a.id], rb = radii[b.id];
+        const minSep = ra + rb + PHYS_GAP;
+
+        let dx = pb.x - pa.x;
+        let dy = pb.y - pa.y;
+        let d  = Math.hypot(dx, dy);
+        if (d === 0) { dx = 0.7071; dy = 0.7071; d = 1; }
+        if (d >= minSep) continue;
+
+        const push = (minSep - d) * PHYS_SPRING;
+        const ux = dx / d, uy = dy / d;
+
+        const ma = ra * ra, mb = rb * rb;
+        const aFixed = a.id === immovableId;
+        const bFixed = b.id === immovableId;
+        let wa: number, wb: number;
+        if      (aFixed && bFixed) { wa = 0;              wb = 0; }
+        else if (aFixed)           { wa = 0;              wb = 1; }
+        else if (bFixed)           { wa = 1;              wb = 0; }
+        else                       { wa = mb / (ma + mb); wb = ma / (ma + mb); }
+
+        const ax = ux * push * wa, ay = uy * push * wa;
+        const bx = ux * push * wb, by = uy * push * wb;
+        pa.x -= ax; pa.y -= ay;
+        pb.x += bx; pb.y += by;
+        maxDisp = Math.max(maxDisp, Math.abs(ax), Math.abs(ay), Math.abs(bx), Math.abs(by));
+      }
+    }
+
+    // — parent ring constraint: keep each child inside [minD, maxD] of its parent —
+    for (const b of bubbles) {
+      if (!b.parentId) continue;
+      const parent = byId[b.parentId];
+      const pp = pos[b.parentId];
+      const pb = pos[b.id];
+      if (!parent || !pp || !pb) continue;
+
+      const pr = radii[parent.id] ?? 0;
+      const cr = radii[b.id] ?? 0;
+      const siblings = bubbles.filter(s => s.parentId === b.parentId);
+      const minD = pr + cr + PHYS_GAP;
+      const natural = ringRadius(pr, cr, siblings.length);
+      const maxD = Math.max(natural + Math.max(40, pr * 0.9), minD + Math.max(48, pr * 1.6));
+
+      let dx = pb.x - pp.x;
+      let dy = pb.y - pp.y;
+      let d  = Math.hypot(dx, dy);
+      if (d === 0) { dx = 1; dy = 0; d = 1; }
+
+      const clamped = Math.min(Math.max(d, minD), maxD);
+      if (clamped !== d) {
+        pb.x = pp.x + (dx / d) * clamped;
+        pb.y = pp.y + (dy / d) * clamped;
+      }
+    }
+  }
+
+  return maxDisp;
+}
