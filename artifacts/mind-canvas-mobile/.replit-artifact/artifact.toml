@@ -1,0 +1,24 @@
+kind = "mobile"
+previewPath = "/mind-canvas-mobile/"
+title = "Mind Canvas Mobile"
+description = "Mobile companion to Mind Canvas. An infinite canvas for building nested mind maps with glass-bubble visual style. Supports tap-to-focus navigation, pinch-to-zoom, bubble dragging, add/edit/delete, and JSON import/export compatible with the web app format."
+version = "1.0.0"
+id = "artifacts/mind-canvas-mobile"
+router = "expo-domain"
+
+[[services]]
+name = "expo"
+ensurePreviewReachable = "/status"
+paths = [ "/mind-canvas-mobile/" ]
+localPort = 18991
+
+[services.development]
+run = "pnpm --filter @workspace/mind-canvas-mobile run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/mind-canvas-mobile", "run", "build" ]
+run = [ "pnpm", "--filter", "@workspace/mind-canvas-mobile", "run", "serve" ]
+
+[services.env]
+PORT = "18991"
+BASE_PATH = "/mind-canvas-mobile/"
