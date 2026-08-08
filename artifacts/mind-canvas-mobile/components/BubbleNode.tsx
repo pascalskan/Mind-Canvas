@@ -112,9 +112,11 @@ export const BubbleNode = React.memo(function BubbleNode({
       </Svg>
 
       {/* ── Label ────────────────────────────────────────────────────────── */}
-      <View style={StyleSheet.absoluteFill} pointerEvents="none">
+      {/* Container is centred in the square bounding box; maxWidth keeps text
+          inside the circle at all zoom levels (matches web maxWidth: '84%'). */}
+      <View style={styles.labelContainer} pointerEvents="none">
         <Text
-          style={[styles.label, { fontSize: labelFontSize }]}
+          style={[styles.label, { fontSize: labelFontSize, maxWidth: size * 0.84 }]}
           numberOfLines={2}
           allowFontScaling={false}
         >
@@ -144,18 +146,20 @@ const styles = StyleSheet.create({
   wrapper: {
     position: 'absolute',
   },
+  /** Fills the square bounding box and centres the label inside it. */
+  labelContainer: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+    overflow: 'hidden',
+  },
   label: {
-    flex: 1,
     textAlign: 'center',
     textAlignVertical: 'center',
     color: '#374151',
     fontFamily: 'Inter_300Light',
     fontWeight: '300' as const,
     letterSpacing: 0.5,
-    paddingHorizontal: 6,
-    alignSelf: 'center',
-    marginTop: 'auto',
-    marginBottom: 'auto',
   },
   ring: {
     position: 'absolute',
