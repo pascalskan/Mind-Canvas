@@ -265,6 +265,45 @@ function buildBubbles(): BubbleData[] {
 
 const INITIAL_BUBBLES = buildBubbles();
 
+// ─── Persistence ──────────────────────────────────────────────────────────────
+// State is saved to localStorage on every change so the mind map survives
+// a page refresh or closing the browser. A version key means a future schema
+// change can detect and discard stale saves instead of silently corrupting them.
+
+const STORAGE_KEY     = 'mind-canvas-bubbles';
+const STORAGE_VERSION = 1;
+
+interface StoredState {
+  version: number;
+  bubbles: BubbleData[];
+}
+
+function loadBubbles(): BubbleData[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return INITIAL_BUBBLES;
+    const parsed: StoredState = JSON.parse(raw);
+    if (parsed.version !== STORAGE_VERSION) return INITIAL_BUBBLES;
+    if (!Array.isArray(parsed.bubbles) || parsed.bubbles.length === 0) return INITIAL_BUBBLES;
+    return parsed.bubbles;
+  } catch {
+    return INITIAL_BUBBLES;
+  }
+}
+
+function saveBubbles(bubbles: BubbleData[]): void {
+  try {
+    const state: StoredState = { version: STORAGE_VERSION, bubbles };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // Storage full or unavailable — fail silently; the canvas still works.
+  }
+}
+
+function clearBubbles(): void {
+  try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
+}
+
 // ─── Collision solver ─────────────────────────────────────────────────────────
 // Guarantees no two bubbles ever overlap, and every child stays in the ring
 // between "touching its parent" and its maximum leash.
@@ -1032,7 +1071,7 @@ interface DragOrigin {
 // ─── Main canvas ──────────────────────────────────────────────────────────────
 
 export default function MindCanvas() {
-  const [bubbles,        setBubbles]        = useState<BubbleData[]>(INITIAL_BUBBLES);
+  const [bubbles,        setBubbles]        = useState<BubbleData[]>(() => loadBubbles());
   const [focusedId,      setFocusedId]      = useState<string | null>(null);
   const [editingId,      setEditingId]      = useState<string | null>(null);
   const [editValue,      setEditValue]      = useState('');
@@ -1064,7 +1103,7 @@ export default function MindCanvas() {
   // fix for mobile lag during panning and floating animation.
   const bubbleMVs   = useRef<Map<string, { x: MotionValue<number>; y: MotionValue<number> }>>(new Map());
 
-  const bubblesRef  = useRef<BubbleData[]>(INITIAL_BUBBLES);
+  const bubblesRef  = useRef<BubbleData[]>(bubbles);
   const positionsRef = useRef<Record<string, { x: number; y: number }>>({});
   const editModeRef = useRef(false);
   const focusedIdRef = useRef<string | null>(null);
@@ -1124,6 +1163,11 @@ export default function MindCanvas() {
     for (const id of bubbleMVs.current.keys()) {
       if (!ids.has(id)) bubbleMVs.current.delete(id);
     }
+  }, [bubbles]);
+
+  // Persist to localStorage on every change so the canvas survives page refreshes.
+  useEffect(() => {
+    saveBubbles(bubbles);
   }, [bubbles]);
 
   // ── Ancestors / descendants ──────────────────────────────────────────────
@@ -1863,6 +1907,22 @@ export default function MindCanvas() {
                 setShowAddPanel(true);
               }}>
               <span style={{ fontSize: 18, lineHeight: 1 }}>+</span> Add bubble
+            </motion.button>
+            <motion.button style={pillBase}
+              className="flex items-center gap-2 font-light text-gray-500"
+              whileHover={{ scale: 1.04 }} whileTap={{ scale: .97 }}
+              onClick={() => {
+                if (!window.confirm('Clear the canvas and start fresh?')) return;
+                clearBubbles();
+                setBubbles(INITIAL_BUBBLES);
+                setFocusedId(null);
+                setEditMode(false);
+                setEditingId(null);
+                setEditSelection(null);
+                setQuickCreate(null);
+                setShowAddPanel(false);
+              }}>
+              <span style={{ fontSize: 13, lineHeight: 1, opacity: .6 }}>↺</span> Clear
             </motion.button>
           </>
         )}
