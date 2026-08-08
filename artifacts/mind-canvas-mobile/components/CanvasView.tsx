@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Animated, Dimensions, PanResponder, StyleSheet, View } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { useBubbles } from '@/context/BubbleContext';
 import { BubbleNode } from '@/components/BubbleNode';
@@ -112,13 +113,29 @@ export default function CanvasView() {
     if (!fid) {
       const roots = all.filter(b => b.depth === 0);
       if (!roots.length) return;
+
+      // Compute bounding box of root centres (no bubble radius padding yet)
       let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
       roots.forEach(r => {
-        const s = LAYER_SIZES_OVERVIEW[0] * (r.scale ?? 1) / 2;
-        minX = Math.min(minX, r.x - s); maxX = Math.max(maxX, r.x + s);
-        minY = Math.min(minY, r.y - s); maxY = Math.max(maxY, r.y + s);
+        minX = Math.min(minX, r.x); maxX = Math.max(maxX, r.x);
+        minY = Math.min(minY, r.y); maxY = Math.max(maxY, r.y);
       });
-      animateCamera(fitBounds(minX, maxX, minY, maxY, 80, 0.55));
+
+      // Use a scale that shows everything at ~60 % fill, then push it 1.6× larger
+      // so bubbles feel big on-screen. Allow the outer roots to bleed off-edge —
+      // the user can pinch/pan to see them. Cap at 0.85 to avoid going crazy.
+      const span   = Math.max(maxX - minX, 1);
+      const spanY  = Math.max(maxY - minY, 1);
+      const fitS   = Math.min(SW / (span + 200), SH / (spanY + 200));
+      const overviewScale = Math.min(fitS * 1.6, 0.85);
+
+      const centX = (minX + maxX) / 2;
+      const centY = (minY + maxY) / 2;
+      animateCamera({
+        x:     SW / 2 - centX * overviewScale,
+        y:     SH / 2 - centY * overviewScale,
+        scale: overviewScale,
+      });
       return;
     }
 
@@ -346,6 +363,14 @@ export default function CanvasView() {
 
   return (
     <View style={styles.container} {...panResponder.panHandlers}>
+      {/* Background gradient layer — must be first so it sits behind bubbles */}
+      <LinearGradient
+        colors={['#FAFAFA', '#EEEEF2']}
+        start={{ x: 0.5, y: 0 }}
+        end={{ x: 0.5, y: 1 }}
+        style={StyleSheet.absoluteFill}
+        pointerEvents="none"
+      />
       {/* Bubbles — rendered in screen space for Expo-Web compatibility */}
       {visibleBubbles.map(b => {
         if (draggingId === b.id) return null;
@@ -397,7 +422,6 @@ export default function CanvasView() {
 const styles = StyleSheet.create({
   container: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#F5F5F7',
   },
   dragBubble: {
     position: 'absolute',

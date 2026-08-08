@@ -38,8 +38,9 @@ export function getSize(b: BubbleData): number {
 
 // Display sizes for the three-layer view (world units).
 // These can differ from the stored bubble size so transitions feel smooth.
-export const LAYER_SIZES_OVERVIEW: [number, number, number] = [180, 120, 50];
-export const LAYER_SIZES_FOCUSED:  [number, number, number] = [220, 145, 55];
+// Mobile uses larger values than web so bubbles read clearly on a small screen.
+export const LAYER_SIZES_OVERVIEW: [number, number, number] = [260, 175, 75];
+export const LAYER_SIZES_FOCUSED:  [number, number, number] = [300, 200, 80];
 
 // ── Ring geometry ──────────────────────────────────────────────────────────────
 
