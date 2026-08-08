@@ -683,6 +683,150 @@ describe('scale changes — setBubbles → persistence', () => {
   });
 });
 
+// ─── Color changes ────────────────────────────────────────────────────────────
+// The color-picker in MindCanvas.tsx writes a new `color` back to state via
+// setBubbles — the same code path as scale or drag.  These tests confirm that
+// color changes survive a saveBubbles / loadBubbles round-trip (simulated page
+// refresh) and that edge cases (root vs. child, propagation, sequential
+// overwrites) are handled correctly.
+
+describe('color changes — setBubbles → persistence', () => {
+  it('persists a color change on a root bubble', async () => {
+    const { result } = renderBubbleState();
+
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => b.id === 'r0' ? { ...b, color: 'hsl(120,60%,55%)' } : b),
+      );
+    });
+
+    const saved = readStorage();
+    expect(saved.find(b => b.id === 'r0')?.color).toBe('hsl(120,60%,55%)');
+  });
+
+  it('persists a color change on a child bubble', async () => {
+    const { result } = renderBubbleState();
+
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => b.id === 'c1' ? { ...b, color: 'hsl(30,80%,60%)' } : b),
+      );
+    });
+
+    const saved = readStorage();
+    expect(saved.find(b => b.id === 'c1')?.color).toBe('hsl(30,80%,60%)');
+  });
+
+  it('loadBubbles restores the changed color exactly after a round-trip', async () => {
+    const { result } = renderBubbleState();
+
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => b.id === 'c2' ? { ...b, color: 'hsl(200,70%,50%)' } : b),
+      );
+    });
+
+    // Simulate page refresh.
+    const restored = loadBubbles(FALLBACK);
+    expect(restored.find(b => b.id === 'c2')?.color).toBe('hsl(200,70%,50%)');
+  });
+
+  it('color propagated to a child persists independently of the root color', async () => {
+    // Simulate the pattern where a root-color change is also applied to its
+    // children (as the app does when reassigning a root color).
+    const newColor = 'hsl(300,55%,60%)';
+
+    await act(async () => {
+      // Render first so we get a hook to work with.
+    });
+
+    const { result } = renderBubbleState();
+
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b =>
+          b.id === 'r0' || b.parentId === 'r0'
+            ? { ...b, color: newColor }
+            : b,
+        ),
+      );
+    });
+
+    const restored = loadBubbles(FALLBACK);
+    expect(restored.find(b => b.id === 'r0')?.color).toBe(newColor);
+    expect(restored.find(b => b.id === 'c1')?.color).toBe(newColor);
+    expect(restored.find(b => b.id === 'c2')?.color).toBe(newColor);
+  });
+
+  it('two sequential color changes persist only the final value', async () => {
+    const { result } = renderBubbleState();
+
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => b.id === 'r0' ? { ...b, color: 'hsl(10,60%,50%)' } : b),
+      );
+    });
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => b.id === 'r0' ? { ...b, color: 'hsl(180,60%,50%)' } : b),
+      );
+    });
+
+    const saved = readStorage();
+    expect(saved.find(b => b.id === 'r0')?.color).toBe('hsl(180,60%,50%)');
+  });
+
+  it('only the target bubble color changes; siblings are untouched', async () => {
+    const { result } = renderBubbleState();
+
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => b.id === 'c1' ? { ...b, color: 'hsl(60,70%,55%)' } : b),
+      );
+    });
+
+    const saved = readStorage();
+    expect(saved.find(b => b.id === 'c1')?.color).toBe('hsl(60,70%,55%)');
+    // Sibling and root must keep their original seed colors.
+    expect(saved.find(b => b.id === 'c2')?.color).toBe('hsl(250,60%,65%)');
+    expect(saved.find(b => b.id === 'r0')?.color).toBe('hsl(250,60%,65%)');
+  });
+
+  it('hook in-memory state and localStorage agree after a color change', async () => {
+    const { result } = renderBubbleState();
+
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => b.id === 'c2' ? { ...b, color: 'hsl(90,65%,45%)' } : b),
+      );
+    });
+
+    const saved  = readStorage();
+    const inMem  = result.current.bubbles.find(b => b.id === 'c2');
+    const onDisk = saved.find(b => b.id === 'c2');
+
+    expect(inMem?.color).toBe(onDisk?.color);
+  });
+
+  it('color survives an interleaved rename without being lost', async () => {
+    const { result } = renderBubbleState();
+
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => b.id === 'c1' ? { ...b, color: 'hsl(340,75%,55%)' } : b),
+      );
+    });
+    await act(async () => {
+      result.current.renameBubble('c1', 'Renamed');
+    });
+
+    const restored = loadBubbles(FALLBACK);
+    const c1 = restored.find(b => b.id === 'c1');
+    expect(c1?.label).toBe('Renamed');
+    expect(c1?.color).toBe('hsl(340,75%,55%)');
+  });
+});
+
 // ─── Combined sequences ───────────────────────────────────────────────────────
 
 describe('combined add → rename → delete sequences', () => {
