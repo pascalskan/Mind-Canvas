@@ -1016,6 +1016,7 @@ export default function MindCanvas() {
     addBubble,
     deleteBubblesById,
     renameBubble,
+    forceSyncFromCloud,
   } = useBubbleState(INITIAL_BUBBLES);
   const [focusedId,      setFocusedId]      = useState<string | null>(null);
   const [editingId,      setEditingId]      = useState<string | null>(null);
@@ -1993,6 +1994,12 @@ export default function MindCanvas() {
               whileHover={{ scale: 1.04 }} whileTap={{ scale: .97 }}
               onClick={() => importInputRef.current?.click()}>
               <span style={{ fontSize: 13, lineHeight: 1, opacity: .7 }}>↑</span> Import
+            </motion.button>
+            <motion.button style={pillBase}
+              className="flex items-center gap-2 font-light text-gray-500"
+              whileHover={{ scale: 1.04 }} whileTap={{ scale: .97 }}
+              onClick={() => forceSyncFromCloud()}>
+              <span style={{ fontSize: 13, lineHeight: 1, opacity: .7 }}>⟳</span> Sync
             </motion.button>
             <motion.button style={pillBase}
               className="flex items-center gap-2 font-light text-gray-500"

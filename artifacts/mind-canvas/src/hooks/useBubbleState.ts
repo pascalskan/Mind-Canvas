@@ -79,6 +79,8 @@ export interface BubbleStateResult {
   deleteBubblesById:(doomed: Set<string>) => void;
   /** Renames bubble `id`; trims whitespace; keeps old label if result is empty. */
   renameBubble:     (id: string, newLabel: string) => void;
+  /** Pull the server's canonical state and apply it immediately, overriding local data. */
+  forceSyncFromCloud: () => Promise<void>;
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -172,6 +174,12 @@ export function useBubbleState(initialBubbles: BubbleData[]): BubbleStateResult 
       });
     }
   }, [bubbles]);
+
+  // ── forceSyncFromCloud ────────────────────────────────────────────────────
+  const forceSyncFromCloud = useCallback(async () => {
+    const cloud = await fetchFromCloud();
+    if (cloud) setBubbles(cloud);
+  }, []);
 
   // ── addBubble ─────────────────────────────────────────────────────────────
   // Exact replica of the addBubble handler in MindCanvas.tsx.
@@ -286,5 +294,6 @@ export function useBubbleState(initialBubbles: BubbleData[]): BubbleStateResult 
     addBubble,
     deleteBubblesById,
     renameBubble,
+    forceSyncFromCloud,
   };
 }

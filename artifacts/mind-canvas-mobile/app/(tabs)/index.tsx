@@ -15,7 +15,7 @@ export default function MainScreen() {
     bubbles, focusedId, editMode, editSelection,
     byId, setFocusedId, setEditMode, setEditSelection,
     cloudSaveOk,
-    exportMap, importMap,
+    exportMap, importMap, forceSyncFromCloud,
   } = useBubbles();
 
   const insets = useSafeAreaInsets();
@@ -179,6 +179,12 @@ export default function MainScreen() {
                 onPress={() => { exportMap(); Haptics.selectionAsync(); }}
               >
                 <Feather name="download" size={20} color="#6b7280" />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.iconBtn}
+                onPress={() => { forceSyncFromCloud(); Haptics.selectionAsync(); }}
+              >
+                <Feather name="refresh-cw" size={20} color="#6b7280" />
               </TouchableOpacity>
               <TouchableOpacity style={[styles.pill, styles.pillEdit]} onPress={enterEdit}>
                 <Feather name="edit-2" size={14} color="#6b7280" />

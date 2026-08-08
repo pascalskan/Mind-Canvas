@@ -43,6 +43,8 @@ interface BubbleContextValue {
 
   exportMap: () => Promise<void>;
   importMap: () => Promise<void>;
+  /** Pull the server's canonical state and apply it immediately, overriding local data. */
+  forceSyncFromCloud: () => Promise<void>;
 }
 
 const BubbleContext = createContext<BubbleContextValue | null>(null);
@@ -492,17 +494,29 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
     setBubbles(prev => correctGrandchildPositions(prev, focusedId));
   }, [focusedId]);
 
+  const forceSyncFromCloud = useCallback(async () => {
+    const cloud = await fetchFromCloud();
+    if (!cloud) {
+      Alert.alert('Sync failed', 'Could not reach the server. Check your connection and try again.');
+      return;
+    }
+    // Apply cloud data, correct positions, and reset save flag so the next
+    // push doesn't overwrite the just-pulled state with stale local data.
+    editedBeforeCloudRef.current = false;
+    setBubbles(correctGrandchildPositions(cloud, null));
+  }, []);
+
   const value = useMemo<BubbleContextValue>(() => ({
     bubbles, focusedId, editMode, editSelection, byId, cloudSaveOk,
     setFocusedId, setEditMode, setEditSelection,
     addBubble, deleteBubble, renameBubble, recolorBubble, resizeBubble,
     updateBubblePosition, batchUpdatePositions, snapGrandchildren,
-    exportMap, importMap,
+    exportMap, importMap, forceSyncFromCloud,
   }), [
     bubbles, focusedId, editMode, editSelection, byId, cloudSaveOk,
     addBubble, deleteBubble, renameBubble, recolorBubble, resizeBubble,
     updateBubblePosition, batchUpdatePositions, snapGrandchildren,
-    exportMap, importMap,
+    exportMap, importMap, forceSyncFromCloud,
   ]);
 
   return <BubbleContext.Provider value={value}>{children}</BubbleContext.Provider>;
