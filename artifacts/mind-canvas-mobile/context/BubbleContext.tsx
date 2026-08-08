@@ -238,6 +238,10 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
   const cloudSaveOkRef = useRef(true);
   cloudSaveOkRef.current = cloudSaveOk;
 
+  // Tracks the timestamp of the most recent local write so the poll can skip
+  // applying remote state when the user has touched the map very recently.
+  const lastLocalWriteRef = useRef(0);
+
   // ── Cross-device sync polling ────────────────────────────────────────────
   // Every 30 s fetch the server's canonical state. If it differs from what we
   // have locally (another device made changes) AND all our own saves are
@@ -246,13 +250,34 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
     const timer = setInterval(async () => {
       if (!cloudSyncedRef.current) return;   // still bootstrapping
       if (!cloudSaveOkRef.current) return;   // local edits not yet committed
+      // Skip if the user wrote within the last 5 s to avoid disrupting active drags.
+      if (Date.now() - lastLocalWriteRef.current < 5_000) return;
+      // Capture write timestamp before the async fetch so we can detect
+      // a drag that starts while the request is in flight.
+      const writeSnapshot = lastLocalWriteRef.current;
       const cloud = await fetchFromCloud();
       if (!cloud) return;
-      const cur    = bubblesRef.current;
-      // Compare by sorted id+label fingerprint — detects adds, deletes, renames.
-      const sig = (bs: BubbleData[]) =>
+      // Re-check: a local write may have occurred during the in-flight request.
+      if (lastLocalWriteRef.current !== writeSnapshot) return;
+      const cur = bubblesRef.current;
+      // Structural fingerprint: detects adds, deletes, renames, recolors.
+      const structSig = (bs: BubbleData[]) =>
         bs.map(b => `${b.id}~${b.label}~${b.color}`).sort().join('|');
-      if (sig(cloud) !== sig(cur)) setBubbles(cloud);
+      // Full fingerprint: integer-rounded x/y detects any position change from another device.
+      const fullSig = (bs: BubbleData[]) =>
+        bs.map(b => `${b.id}~${b.label}~${b.color}~${Math.round(b.x)}~${Math.round(b.y)}`).sort().join('|');
+      if (fullSig(cloud) === fullSig(cur)) return;
+      if (structSig(cloud) === structSig(cur)) {
+        // Position-only change: merge x/y smoothly without replacing the full array.
+        const cloudById = Object.fromEntries(cloud.map(b => [b.id, b]));
+        setBubbles(prev => prev.map(b => {
+          const cb = cloudById[b.id];
+          return cb ? { ...b, x: cb.x, y: cb.y } : b;
+        }));
+      } else {
+        // Structural change (add/delete/rename/recolor): full replace.
+        setBubbles(cloud);
+      }
     }, 30_000);
     return () => clearInterval(timer);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -261,6 +286,8 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
   // Save on every change (after initial load + cloud sync)
   useEffect(() => {
     if (!loaded) return;
+    // Record write time so the poll guard knows the user was recently active.
+    lastLocalWriteRef.current = Date.now();
     saveBubbles(bubbles).then(ok => {
       if (!ok) console.warn('[MindCanvas] AsyncStorage write failed — data is still safe in cloud.');
     });
