@@ -1389,7 +1389,25 @@ export default function MindCanvas() {
       cameraScale.set(s1);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
+
+    // iOS Safari fires touch events separately from pointer events and will
+    // scroll or pinch-zoom the viewport unless we suppress them with a
+    // non-passive listener. Block multi-touch (pinch) moves and any touchstart
+    // that begins a two-finger gesture so the page never jumps underneath.
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length >= 2) e.preventDefault();
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length >= 2) e.preventDefault();
+    };
+    el.addEventListener('touchstart', onTouchStart, { passive: false });
+    el.addEventListener('touchmove',  onTouchMove,  { passive: false });
+
+    return () => {
+      el.removeEventListener('wheel',      onWheel);
+      el.removeEventListener('touchstart', onTouchStart);
+      el.removeEventListener('touchmove',  onTouchMove);
+    };
   }, [editMode, cameraX, cameraY, cameraScale]);
 
   // ── Drag ─────────────────────────────────────────────────────────────────
