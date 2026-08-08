@@ -1,13 +1,24 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import { motion, useMotionValue, animate, motionValue, type MotionValue } from 'framer-motion';
 import {
-  saveBubbles,
-  loadBubbles as loadBubblesFromStorage,
   clearBubbles,
   STORAGE_QUOTA_BYTES,
   STORAGE_WARN_RATIO,
   type BubbleData,
 } from '../persistence';
+import {
+  MAX_DEPTH,
+  GAP,
+  DEPTH_SIZE,
+  SCALE_MIN,
+  SCALE_MAX,
+  SCALE_STEP,
+  ROOT_COLORS,
+  sizeForDepth,
+  getSize,
+  ringRadius,
+} from '../lib/bubbleLayout';
+import { useBubbleState } from '../hooks/useBubbleState';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 // Everything on the canvas is a bubble. There is no "content" — a note, an item,
@@ -16,21 +27,9 @@ import {
 // BubbleData is defined in ../persistence and re-exported from there so it can
 // be unit-tested independently of the React component tree.
 
-const MAX_DEPTH = 10;
-const GAP       = 9;   // minimum breathing room between any two bubbles
-
 // ─── Sizes ────────────────────────────────────────────────────────────────────
-// Stored world sizes stay purely depth-driven — they only ever seed the initial
-// coordinates. What is actually DRAWN is decided by `computeSizes` below.
-
-const DEPTH_SIZE = [320, 166, 112, 84, 68, 58, 52, 47, 43, 40, 37];
-
-function sizeForDepth(depth: number): number {
-  return DEPTH_SIZE[Math.min(depth, DEPTH_SIZE.length - 1)];
-}
-function getSize(b: BubbleData): number {
-  return sizeForDepth(b.depth);
-}
+// MAX_DEPTH, GAP, DEPTH_SIZE, sizeForDepth, getSize, ringRadius are imported
+// from ../lib/bubbleLayout (shared with useBubbleState).
 
 // Only ever three layers are on screen, so on-screen size STARTS from the
 // RELATIVE layer, never from absolute depth. That is what makes depth 8 read
@@ -41,10 +40,7 @@ const LAYER_SIZE_FOCUSED  = [250, 132, 16];
 
 // ─── Manual size ──────────────────────────────────────────────────────────────
 // Size is set by hand, never inferred from how much a bubble contains.
-
-const SCALE_MIN  = 0.1;
-const SCALE_MAX  = 2.0;
-const SCALE_STEP = 0.1;
+// SCALE_MIN, SCALE_MAX, SCALE_STEP imported from ../lib/bubbleLayout.
 
 const SCALE_OPTIONS = Array.from(
   { length: Math.round((SCALE_MAX - SCALE_MIN) / SCALE_STEP) + 1 },
@@ -171,14 +167,7 @@ const SEED: { label: string; color: string; children: SeedNode[] }[] = [
   },
 ];
 
-// Ring radius that fits `n` circles of radius `cr` around a parent of radius `pr`
-// without the siblings touching each other.
-function ringRadius(pr: number, cr: number, n: number): number {
-  const touching = pr + cr + GAP + cr * 0.55 + 12;
-  if (n <= 1) return touching;
-  const spacing = (cr + GAP / 2) / Math.sin(Math.PI / n);
-  return Math.max(touching, spacing);
-}
+// ringRadius is imported from ../lib/bubbleLayout.
 
 // The band a child may live in, measured in RENDERED radii:
 //   minD    — touching its parent
@@ -379,12 +368,7 @@ function getFloatParams(id: string, layer: number) {
   };
 }
 
-// ─── Colors ───────────────────────────────────────────────────────────────────
-
-const ROOT_COLORS = [
-  'hsl(250,60%,65%)', 'hsl(340,60%,65%)', 'hsl(170,40%,55%)',
-  'hsl(40,65%,65%)',  'hsl(200,55%,60%)', 'hsl(290,50%,66%)',
-];
+// ROOT_COLORS is imported from ../lib/bubbleLayout.
 
 // ─── View layout ──────────────────────────────────────────────────────────────
 // The single source of truth for where the visible three layers sit. Both the
@@ -1020,7 +1004,15 @@ interface DragOrigin {
 // ─── Main canvas ──────────────────────────────────────────────────────────────
 
 export default function MindCanvas() {
-  const [bubbles,        setBubbles]        = useState<BubbleData[]>(() => loadBubblesFromStorage(INITIAL_BUBBLES));
+  const {
+    bubbles,
+    setBubbles,
+    byId,
+    lastSave,
+    addBubble,
+    deleteBubblesById,
+    renameBubble,
+  } = useBubbleState(INITIAL_BUBBLES);
   const [focusedId,      setFocusedId]      = useState<string | null>(null);
   const [editingId,      setEditingId]      = useState<string | null>(null);
   const [editValue,      setEditValue]      = useState('');
@@ -1040,7 +1032,7 @@ export default function MindCanvas() {
   const cameraY = useMotionValue(typeof window !== 'undefined' ? window.innerHeight / 2 : 360);
   const cameraScale = useMotionValue(0.5);
 
-  const byId = useMemo(() => Object.fromEntries(bubbles.map(b => [b.id, b])), [bubbles]);
+  // byId is provided by useBubbleState.
 
   // Rendered diameters, content-scaled and hierarchy-clamped. Same pure function
   // the animation loop and camera use, so the drawn size always matches the size
@@ -1117,9 +1109,10 @@ export default function MindCanvas() {
     }
   }, [bubbles]);
 
-  // Persist to localStorage on every change so the canvas survives page refreshes.
+  // React to the save result emitted by useBubbleState: show the toast on
+  // failure, or update the quota-warning banner on success.
   useEffect(() => {
-    const { ok, bytes } = saveBubbles(bubbles);
+    const { ok, bytes } = lastSave;
     if (!ok) {
       setSaveFailedToast(true);
       if (saveToastTimer.current) clearTimeout(saveToastTimer.current);
@@ -1130,7 +1123,7 @@ export default function MindCanvas() {
       // map shrinks back below the threshold.
       setStorageNearLimit(bytes >= STORAGE_QUOTA_BYTES * STORAGE_WARN_RATIO);
     }
-  }, [bubbles]);
+  }, [lastSave]);
 
   // ── Ancestors / descendants ──────────────────────────────────────────────
 
@@ -1561,7 +1554,7 @@ export default function MindCanvas() {
   // ── Edit save ────────────────────────────────────────────────────────────
 
   const handleEditSave = (id: string) => {
-    setBubbles(prev => prev.map(b => b.id === id ? { ...b, label: editValue.trim() || b.label } : b));
+    renameBubble(id, editValue);
     setEditingId(null);
   };
 
@@ -1578,64 +1571,7 @@ export default function MindCanvas() {
     setQuickCreate(null);
   };
 
-  // ── Add bubble ───────────────────────────────────────────────────────────
-
-  const addBubble = (label: string, parentId: string | null, opts?: { color?: string; scale?: number }) => {
-    const id = `n${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
-
-    if (!parentId) {
-      const roots = bubbles.filter(b => b.depth === 0);
-      const angle = (roots.length / Math.max(roots.length + 1, 3)) * Math.PI * 2 - Math.PI / 2;
-      const R = 620 + roots.length * 40;
-      const chosenColor = opts?.color ?? ROOT_COLORS[roots.length % ROOT_COLORS.length];
-      setBubbles(prev => [...prev, {
-        id, depth: 0, label,
-        x: Math.cos(angle) * R, y: Math.sin(angle) * R,
-        color: chosenColor,
-        ...(opts?.scale !== undefined ? { scale: opts.scale } : {}),
-      }]);
-      return;
-    }
-
-    const parent = bubbles.find(b => b.id === parentId);
-    if (!parent || parent.depth >= MAX_DEPTH) return;
-
-    const depth    = parent.depth + 1;
-    const siblings = bubbles.filter(b => b.parentId === parentId);
-    const pr = getSize(parent) / 2;
-    const cr = sizeForDepth(depth) / 2;
-    const R  = ringRadius(pr, cr, siblings.length + 1);
-
-    // Drop the new bubble into the widest angular gap between existing siblings
-    let angle: number;
-    if (!siblings.length) {
-      const gp = parent.parentId ? byId[parent.parentId] : null;
-      angle = gp ? Math.atan2(parent.y - gp.y, parent.x - gp.x) : -Math.PI / 2;
-    } else {
-      const angles = siblings
-        .map(s => Math.atan2(s.y - parent.y, s.x - parent.x))
-        .sort((a, b) => a - b);
-      let bestGap = -1, bestMid = angles[0] + Math.PI;
-      for (let i = 0; i < angles.length; i++) {
-        const a1 = angles[i];
-        const a2 = i === angles.length - 1 ? angles[0] + Math.PI * 2 : angles[i + 1];
-        const gap = a2 - a1;
-        if (gap > bestGap) { bestGap = gap; bestMid = a1 + gap / 2; }
-      }
-      angle = bestMid;
-    }
-
-    // Children inherit the explicitly-chosen color; if none was chosen they
-    // follow the parent's color so the branch stays coherent.
-    const chosenColor = opts?.color ?? parent.color;
-    setBubbles(prev => [...prev, {
-      id, depth, parentId, label,
-      x: parent.x + Math.cos(angle) * R,
-      y: parent.y + Math.sin(angle) * R,
-      color: chosenColor,
-      ...(opts?.scale !== undefined ? { scale: opts.scale } : {}),
-    }]);
-  };
+  // addBubble is provided by useBubbleState.
 
   // ── Recolor a pillar ─────────────────────────────────────────────────────
   // A pillar's color is the identity of its whole branch, so every descendant
@@ -1665,7 +1601,7 @@ export default function MindCanvas() {
 
   const deleteBubble = (id: string) => {
     const doomed = new Set<string>([id, ...descendantsOf(id)]);
-    setBubbles(prev => prev.filter(b => !doomed.has(b.id)));
+    deleteBubblesById(doomed);
     if (focusedId && doomed.has(focusedId)) setFocusedId(null);
     if (editingId && doomed.has(editingId)) setEditingId(null);
   };
