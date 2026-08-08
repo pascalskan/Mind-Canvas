@@ -194,10 +194,18 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: P
   const visibleRef = useRef(visibleBubbles); visibleRef.current = visibleBubbles;
 
   // ── Camera fit on focus change ───────────────────────────────────────────────
+  // Rule: zoom in only on the FIRST tap (overview → focused).
+  // Subsequent taps while already focused just pan at the locked scale so
+  // bubbles never stack. Going back to overview zooms out again.
+  const prevFocusedIdRef = useRef<string | null>(null);
+
   useEffect(() => {
-    const fid = focusedId;
-    const all = bubblesRef.current;
-    const bid = byIdRef.current;
+    const prevFid = prevFocusedIdRef.current;
+    const fid     = focusedId;
+    prevFocusedIdRef.current = fid;
+
+    const all     = bubblesRef.current;
+    const bid     = byIdRef.current;
     const visible = all.filter(b => isInThreeLayerView(b, fid, bid));
     if (!visible.length) return;
 
@@ -208,11 +216,23 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: P
       minY = Math.min(minY, b.y - r); maxY = Math.max(maxY, b.y + r);
     });
 
-    animateCamera(
-      fid
-        ? fitBounds(minX, maxX, minY, maxY, 110, 1.6)   // focused
-        : fitBounds(minX, maxX, minY, maxY, 90,  0.9),  // overview
-    );
+    if (!fid) {
+      // Returning to overview — zoom back out
+      animateCamera(fitBounds(minX, maxX, minY, maxY, 90, 0.9));
+    } else if (prevFid === null) {
+      // First focus from overview — zoom in once
+      animateCamera(fitBounds(minX, maxX, minY, maxY, 110, 1.6));
+    } else {
+      // Already focused — pan only, preserve the locked scale
+      const scale = cameraRef.current.scale;
+      const midX  = (minX + maxX) / 2;
+      const midY  = (minY + maxY) / 2;
+      animateCamera({
+        x: SW / 2 - midX * scale,
+        y: SH / 2 - midY * scale,
+        scale,
+      });
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusedId]);
 

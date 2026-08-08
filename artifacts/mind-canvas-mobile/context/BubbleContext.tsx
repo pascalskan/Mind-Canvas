@@ -82,22 +82,38 @@ function correctGrandchildPositions(
   }
 
   const corrected = new Map<string, { x: number; y: number }>();
+  const FAN_STEP  = Math.PI / 8; // 22.5° between pips
+
   for (const [pid, siblings] of byParent.entries()) {
     const parent = byIdLocal[pid];
     if (!parent) continue;
     const targetR = ringRadius(parentDisplayR, gcDisplayR, siblings.length);
-    for (const gc of siblings) {
-      const dx   = gc.x - parent.x;
-      const dy   = gc.y - parent.y;
+
+    // Pips always fan out OPPOSITE from the grandparent so it's visually
+    // clear which parent they belong to.
+    const gp = byIdLocal[parent.parentId ?? ''];
+    const baseAngle = gp
+      ? Math.atan2(parent.y - gp.y, parent.x - gp.x) // away from grandparent
+      : -Math.PI / 2;
+
+    const n = siblings.length;
+    siblings.forEach((gc, i) => {
+      const offset   = (i - (n - 1) / 2) * FAN_STEP;
+      const angle    = baseAngle + offset;
+      const targetX  = parent.x + Math.cos(angle) * targetR;
+      const targetY  = parent.y + Math.sin(angle) * targetR;
+
+      const dx = gc.x - parent.x;
+      const dy = gc.y - parent.y;
       const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-      if (Math.abs(dist - targetR) > 15) {
-        const angle = Math.atan2(dy, dx);
-        corrected.set(gc.id, {
-          x: parent.x + Math.cos(angle) * targetR,
-          y: parent.y + Math.sin(angle) * targetR,
-        });
+      const curAngle = Math.atan2(dy, dx);
+      // Normalised angular difference
+      const angleDiff = Math.abs(((angle - curAngle + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+
+      if (Math.abs(dist - targetR) > 15 || angleDiff > Math.PI / 9) {
+        corrected.set(gc.id, { x: targetX, y: targetY });
       }
-    }
+    });
   }
 
   if (!corrected.size) return bubbles;
