@@ -46,6 +46,67 @@ export function useBubbles() {
   return ctx;
 }
 
+// ── Grandchild position corrector (pure) ───────────────────────────────────────
+// Snaps layer-2 pips to the correct display-radius distance from their parent.
+// Called both on cloud load and whenever focusedId changes.
+function correctGrandchildPositions(
+  bubbles: BubbleData[],
+  focusedId: string | null,
+): BubbleData[] {
+  const byIdLocal = Object.fromEntries(bubbles.map(b => [b.id, b]));
+
+  let grandchildren: BubbleData[];
+  let parentDisplayR: number;
+  let gcDisplayR: number;
+
+  if (focusedId) {
+    grandchildren = bubbles.filter(b => {
+      const p = byIdLocal[b.parentId ?? ''];
+      return !!p && p.parentId === focusedId;
+    });
+    parentDisplayR = LAYER_SIZES_FOCUSED[1] / 2;
+    gcDisplayR     = LAYER_SIZES_FOCUSED[2] / 2;
+  } else {
+    grandchildren = bubbles.filter(b => b.depth === 2);
+    parentDisplayR = LAYER_SIZES_OVERVIEW[1] / 2;
+    gcDisplayR     = LAYER_SIZES_OVERVIEW[2] / 2;
+  }
+
+  if (!grandchildren.length) return bubbles;
+
+  const byParent = new Map<string, BubbleData[]>();
+  for (const gc of grandchildren) {
+    const pid = gc.parentId ?? '';
+    if (!byParent.has(pid)) byParent.set(pid, []);
+    byParent.get(pid)!.push(gc);
+  }
+
+  const corrected = new Map<string, { x: number; y: number }>();
+  for (const [pid, siblings] of byParent.entries()) {
+    const parent = byIdLocal[pid];
+    if (!parent) continue;
+    const targetR = ringRadius(parentDisplayR, gcDisplayR, siblings.length);
+    for (const gc of siblings) {
+      const dx   = gc.x - parent.x;
+      const dy   = gc.y - parent.y;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      if (Math.abs(dist - targetR) > 15) {
+        const angle = Math.atan2(dy, dx);
+        corrected.set(gc.id, {
+          x: parent.x + Math.cos(angle) * targetR,
+          y: parent.y + Math.sin(angle) * targetR,
+        });
+      }
+    }
+  }
+
+  if (!corrected.size) return bubbles;
+  return bubbles.map(b => {
+    const u = corrected.get(b.id);
+    return u ? { ...b, ...u } : b;
+  });
+}
+
 // ── Provider ───────────────────────────────────────────────────────────────────
 
 const INITIAL = buildInitialBubbles();
@@ -73,15 +134,14 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
       fetchFromCloud()
         .then(cloud => {
           if (!cloud) return;
-          // Resolve overlaps caused by web positions being laid out for smaller
-          // display radii — mobile uses larger LAYER_SIZES so bubbles pile up.
+          // 1. Push overlapping bubbles apart (web positions use smaller radii)
           const bid2 = Object.fromEntries(cloud.map(b => [b.id, b]));
           const resolved = resolveCollisions(cloud, null, bid2, null, 6);
-          if (Object.keys(resolved).length > 0) {
-            setBubbles(cloud.map(b => resolved[b.id] ? { ...b, ...resolved[b.id] } : b));
-          } else {
-            setBubbles(cloud);
-          }
+          const deduped = Object.keys(resolved).length > 0
+            ? cloud.map(b => resolved[b.id] ? { ...b, ...resolved[b.id] } : b)
+            : cloud;
+          // 2. Snap grandchild pips to their parent's visual edge
+          setBubbles(correctGrandchildPositions(deduped, null));
         })
         .finally(() => {
           // Allow cloud pushes only after we've had a chance to pull first
@@ -89,6 +149,13 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
         });
     });
   }, []);
+
+  // ── Grandchild position correction ─────────────────────────────────────────
+  // Snap pips to their parent's visual edge whenever the focused view changes.
+  useEffect(() => {
+    if (!loaded) return;
+    setBubbles(prev => correctGrandchildPositions(prev, focusedId));
+  }, [focusedId, loaded]);
 
   // Save on every change (after initial load + cloud sync)
   useEffect(() => {
