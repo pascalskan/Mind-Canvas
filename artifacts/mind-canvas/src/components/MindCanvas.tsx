@@ -23,6 +23,11 @@ interface BubbleData {
   // ring position derived from its siblings.
   angle?:    number;
   radial?:   number;
+
+  // Manual size, as a multiplier of whatever its current layer's base size is
+  // (1 = 100%). Layer-relative rather than absolute, so "120%" means the same
+  // thing — a fifth bigger than its peers — at every depth. Undefined = 100%.
+  scale?:    number;
 }
 
 const MAX_DEPTH = 10;
@@ -43,47 +48,27 @@ function getSize(b: BubbleData): number {
 
 // Only ever three layers are on screen, so on-screen size STARTS from the
 // RELATIVE layer, never from absolute depth. That is what makes depth 8 read
-// and behave exactly like depth 1 once you are standing inside it. Content then
-// scales each bubble within its layer.
+// and behave exactly like depth 1 once you are standing inside it. The bubble's
+// own manual scale is the only thing applied on top.
 const LAYER_SIZE_OVERVIEW = [320, 166, 18];
 const LAYER_SIZE_FOCUSED  = [250, 132, 16];
 
-// ─── Content weight ───────────────────────────────────────────────────────────
-// "How much is in here" is the bubble's ENTIRE subtree, not just its direct
-// children, so something added ten levels down still nudges its top pillar.
+// ─── Manual size ──────────────────────────────────────────────────────────────
+// Size is set by hand, never inferred from how much a bubble contains.
 
-function contentWeights(all: BubbleData[]): Record<string, number> {
-  const kids: Record<string, string[]> = {};
-  for (const b of all) if (b.parentId) (kids[b.parentId] ??= []).push(b.id);
+const SCALE_MIN  = 0.1;
+const SCALE_MAX  = 2.0;
+const SCALE_STEP = 0.1;
 
-  const weight: Record<string, number> = {};
-  const visit = (id: string): number => {
-    const cached = weight[id];
-    if (cached !== undefined) return cached;
-    weight[id] = 0;                                   // cycle guard
-    let total = 0;
-    for (const c of kids[id] ?? []) total += 1 + visit(c);
-    weight[id] = total;
-    return total;
-  };
-  for (const b of all) visit(b.id);
-  return weight;
+const SCALE_OPTIONS = Array.from(
+  { length: Math.round((SCALE_MAX - SCALE_MIN) / SCALE_STEP) + 1 },
+  (_, i) => Math.round((SCALE_MIN + i * SCALE_STEP) * 10) / 10,
+);
+
+function bubbleScale(b: BubbleData): number {
+  const s = b.scale ?? 1;
+  return Math.min(Math.max(s, SCALE_MIN), SCALE_MAX);
 }
-
-// Saturating growth: the first few bubbles you add make a clear difference, the
-// fiftieth makes a small one. Gradual, and an enormous branch can never balloon.
-const CONTENT_MIN  = 0.75;   // a completely empty bubble
-const CONTENT_MAX  = 1.5;    // the asymptote a giant branch approaches
-const CONTENT_HALF = 10;     // subtree size that lands halfway between the two
-
-function contentScale(weight: number): number {
-  const t = weight / (weight + CONTENT_HALF);
-  return CONTENT_MIN + (CONTENT_MAX - CONTENT_MIN) * t;
-}
-
-// However much a child contains, it must still read as clearly smaller than its
-// own parent. Without this cap, content sizing destroys the nesting.
-const MAX_CHILD_RATIO = 0.62;
 
 function relativeLayer(id: string, focusedId: string | null, byId: Record<string, BubbleData>): number {
   if (!focusedId) return byId[id]?.depth ?? 0;
@@ -103,32 +88,23 @@ function isInThreeLayerView(bubble: BubbleData, focusedId: string | null, byId: 
   return layer >= 0 && layer <= 2;
 }
 
-// Rendered diameter for everything currently on screen. Layers 0 and 1 grow
-// with their content; layer-2 indicator dots stay a fixed pip.
+// Rendered diameter for everything currently on screen: the layer's base size
+// times the bubble's own manual scale. Layer-2 indicator dots stay a fixed pip.
 //
-// `ordered` MUST be sorted by relative layer ascending — a parent has to be
-// sized before its child so the child can be capped against it.
+// Nothing is clamped against the parent — a size the user picked by hand must
+// come out at exactly the percentage they picked, even if that makes a child
+// larger than what it sits inside.
 function computeSizes(
   ordered: BubbleData[],
   layerOf: (b: BubbleData) => number,
   focusedId: string | null,
-  weight: Record<string, number>,
-  visible: Record<string, BubbleData>,
 ): Record<string, number> {
   const table = focusedId ? LAYER_SIZE_FOCUSED : LAYER_SIZE_OVERVIEW;
   const size: Record<string, number> = {};
 
   for (const b of ordered) {
     const layer = Math.min(Math.max(layerOf(b), 0), 2);
-    let s = layer === 2
-      ? table[2]
-      : table[layer] * contentScale(weight[b.id] ?? 0);
-
-    const parentSize = b.parentId ? size[b.parentId] : undefined;
-    if (parentSize !== undefined && visible[b.parentId!]) {
-      s = Math.min(s, parentSize * MAX_CHILD_RATIO);
-    }
-    size[b.id] = s;
+    size[b.id] = layer === 2 ? table[2] : table[layer] * bubbleScale(b);
   }
   return size;
 }
@@ -150,7 +126,7 @@ function viewSizes(all: BubbleData[], focusedId: string | null): ViewSizes {
     .filter(b => isInThreeLayerView(b, focusedId, allMap))
     .sort((a, b) => layerOf(a) - layerOf(b));
   const visible = Object.fromEntries(ordered.map(b => [b.id, b]));
-  const sizes   = computeSizes(ordered, layerOf, focusedId, contentWeights(all), visible);
+  const sizes   = computeSizes(ordered, layerOf, focusedId);
   return { allMap, layerOf, ordered, visible, sizes };
 }
 
@@ -716,21 +692,37 @@ function colorsAreClose(first: string, second: string) {
   return hueGap < 24 && Math.abs(s1 - s2) < 22 && Math.abs(l1 - l2) < 20;
 }
 
-function PillarColorPicker({ color, existingColors, onChoose }: {
+// Panel under the bubble currently locked in edit mode.
+//
+// Color behaves differently by level, deliberately:
+//   pillar (depth 0) — the color IS the branch's identity, so it cascades to
+//                      the whole subtree, and a near-duplicate is challenged.
+//   depth 1+         — the color is that one bubble's own. It never touches its
+//                      parent or its children, and needs no duplicate check.
+function BubbleEditPanel({ color, scale, isPillar, inheritedColor, existingColors, onChoose, onScale, onResetColor }: {
   color: string;
+  scale: number;
+  isPillar: boolean;
+  inheritedColor?: string;
   existingColors: string[];
   onChoose: (color: string) => void;
+  onScale: (scale: number) => void;
+  onResetColor?: () => void;
 }) {
   const [pending, setPending] = useState<string | null>(null);
   const choose = (next: string) => {
-    if (existingColors.some(used => colorsAreClose(used, next))) setPending(next);
+    if (isPillar && existingColors.some(used => colorsAreClose(used, next))) setPending(next);
     else onChoose(next);
   };
 
   return (
     <div className="absolute pointer-events-auto z-50"
       style={{ top: 'calc(100% + 15px)', left: '50%', transform: 'translateX(-50%)', width: 220 }}
-      onPointerDown={e => e.stopPropagation()}>
+      // Stop both ends of the press: the bubble underneath never captured this
+      // pointer, so letting its pointer-up run would try to release one it does
+      // not own.
+      onPointerDown={e => e.stopPropagation()}
+      onPointerUp={e => e.stopPropagation()}>
       <div className="p-3.5"
         style={{ background: 'rgba(255,255,255,.94)', backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)', borderRadius: 15, boxShadow: '0 8px 30px rgba(0,0,0,.12), inset 0 0 0 1px rgba(255,255,255,.95)' }}>
         {pending ? (
@@ -746,13 +738,34 @@ function PillarColorPicker({ color, existingColors, onChoose }: {
           </>
         ) : (
           <>
-            <p className="text-[10px] uppercase tracking-widest font-light text-gray-400 mb-2.5">Pillar color</p>
+            <div className="flex items-baseline justify-between mb-2.5">
+              <p className="text-[10px] uppercase tracking-widest font-light text-gray-400">
+                {isPillar ? 'Pillar color' : 'Bubble color'}
+              </p>
+              {!isPillar && onResetColor && inheritedColor && color !== inheritedColor && (
+                <button className="text-[10px] font-light text-gray-400 hover:text-gray-600 transition-colors"
+                  onClick={onResetColor}>reset</button>
+              )}
+            </div>
             <div className="grid grid-cols-4 gap-2">
               {PILLAR_COLORS.map(option => (
                 <button key={option} aria-label={`Choose ${option}`} onClick={() => choose(option)}
                   className="rounded-full transition-transform hover:scale-110"
                   style={{ width: 34, height: 34, background: option, boxShadow: color === option ? '0 0 0 3px #fff, 0 0 0 5px rgba(90,90,100,.4)' : 'inset 0 1px 2px rgba(255,255,255,.5)' }} />
               ))}
+            </div>
+
+            <div className="mt-3.5 pt-3 border-t border-gray-100">
+              <p className="text-[10px] uppercase tracking-widest font-light text-gray-400 mb-2">Size</p>
+              <select
+                value={String(Math.round(scale * 10) / 10)}
+                onChange={e => onScale(Number(e.target.value))}
+                className="w-full bg-transparent text-sm font-light text-gray-600 outline-none cursor-pointer"
+                style={{ border: '1px solid #e5e7eb', borderRadius: 9, padding: '5px 8px' }}>
+                {SCALE_OPTIONS.map(option => (
+                  <option key={option} value={String(option)}>{Math.round(option * 100)}%</option>
+                ))}
+              </select>
             </div>
           </>
         )}
@@ -912,6 +925,9 @@ interface DragOrigin {
   // resolved in RENDERED space (where the user is actually pointing).
   rx: number; ry: number;
   band: { minD: number; maxD: number } | null;
+  // Whether Shift was down when the press STARTED. Read at press time rather
+  // than at release so letting go of the key first still creates the child.
+  shift: boolean;
 }
 
 // ─── Main canvas ──────────────────────────────────────────────────────────────
@@ -1152,8 +1168,8 @@ export default function MindCanvas() {
 
   const dragOrigin = useRef<DragOrigin>({
     mx: 0, my: 0, bx: 0, by: 0, dist: 0, subtreeOrigins: {}, rx: 0, ry: 0, band: null,
+    shift: false,
   });
-  const lastClick  = useRef<Record<string, number>>({});
   const editClick  = useRef<Record<string, number>>({});
   // When a bubble actually became locked. Locking makes the label interactive,
   // so the very next click of the same double-click gesture can land on it and
@@ -1185,7 +1201,7 @@ export default function MindCanvas() {
 
     dragOrigin.current = {
       mx: e.clientX, my: e.clientY, bx: b.x, by: b.y, dist: 0, subtreeOrigins,
-      rx: rendered.x, ry: rendered.y, band,
+      rx: rendered.x, ry: rendered.y, band, shift: e.shiftKey,
     };
   };
 
@@ -1254,12 +1270,13 @@ export default function MindCanvas() {
           editClick.current[id] = 0;
         }
       } else {
-        const now = Date.now();
-        const wasRecent = now - (lastClick.current[id] ?? 0) < 320;
-        lastClick.current[id] = now;
+        // Shift-click creates a child; a plain click always enters the bubble.
+        // Using a modifier rather than a double-click means the two gestures
+        // cannot be confused by an earlier click leaving a window open.
+        const withShift = dragOrigin.current.shift || e.shiftKey;
         const b = bubblesRef.current.find(x => x.id === id);
         if (b) {
-          if (wasRecent && b.depth < MAX_DEPTH) {
+          if (withShift && b.depth < MAX_DEPTH) {
             const parent = b;
             const depth = parent.depth + 1;
             const siblings = bubblesRef.current.filter(item => item.parentId === parent.id);
@@ -1363,6 +1380,21 @@ export default function MindCanvas() {
     setBubbles(prev => prev.map(b => (family.has(b.id) ? { ...b, color } : b)));
   };
 
+  // ── Recolor a single bubble (depth 1+) ───────────────────────────────────
+  // Below the pillar, color is per-bubble: it touches neither the parent nor
+  // any child, so a branch can carry accents without losing its identity.
+
+  const recolorBubble = (id: string, color: string) => {
+    setBubbles(prev => prev.map(b => (b.id === id ? { ...b, color } : b)));
+  };
+
+  // ── Resize a single bubble ───────────────────────────────────────────────
+
+  const resizeBubble = (id: string, scale: number) => {
+    const next = Math.min(Math.max(scale, SCALE_MIN), SCALE_MAX);
+    setBubbles(prev => prev.map(b => (b.id === id ? { ...b, scale: next } : b)));
+  };
+
   // ── Delete bubble (and its whole subtree) ────────────────────────────────
 
   const deleteBubble = (id: string) => {
@@ -1403,7 +1435,7 @@ export default function MindCanvas() {
         <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
           className="absolute top-5 left-1/2 -translate-x-1/2 z-50 pointer-events-none select-none"
           style={{ background: 'rgba(255,255,255,.84)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 20, padding: '6px 18px', boxShadow: '0 2px 16px rgba(0,0,0,.06),inset 0 0 0 1px rgba(130,110,180,.25)', fontSize: 12, color: 'hsl(260,40%,50%)', letterSpacing: '.04em', fontWeight: 300 }}>
-          Edit mode · double-click a bubble to lock it · click its name to rename · × deletes
+          Edit mode · double-click a bubble to lock it · click its name to rename · set color &amp; size below · × deletes
         </motion.div>
       )}
 
@@ -1455,7 +1487,10 @@ export default function MindCanvas() {
                 y: p.y - size / 2,
                 width: size, height: size,
                 touchAction: 'none', overflow: 'visible',
-                zIndex: 100 - bubble.depth,
+                // A locked bubble's color/size panel must draw above every
+                // sibling, including ones at a shallower depth (which
+                // otherwise sit at a higher default z-index).
+                zIndex: isEditSelected ? 1000 : 100 - bubble.depth,
               }}
               initial={false}
               animate={{ opacity, scale: isFocused || isEditSelected ? 1.04 : 1, filter: 'blur(0px)' }}
@@ -1507,11 +1542,20 @@ export default function MindCanvas() {
                   }} />
               )}
 
-              {editMode && isEditSelected && bubble.depth === 0 && (
-                <PillarColorPicker
+              {editMode && isEditSelected && !visualOnly && (
+                <BubbleEditPanel
                   color={bubble.color}
+                  scale={bubbleScale(bubble)}
+                  isPillar={bubble.depth === 0}
+                  inheritedColor={bubble.parentId ? byId[bubble.parentId]?.color : undefined}
                   existingColors={bubbles.filter(b => b.depth === 0 && b.id !== bubble.id).map(b => b.color)}
-                  onChoose={next => recolorPillar(bubble.id, next)}
+                  onChoose={next => bubble.depth === 0
+                    ? recolorPillar(bubble.id, next)
+                    : recolorBubble(bubble.id, next)}
+                  onResetColor={bubble.parentId
+                    ? () => recolorBubble(bubble.id, byId[bubble.parentId!]?.color ?? bubble.color)
+                    : undefined}
+                  onScale={next => resizeBubble(bubble.id, next)}
                 />
               )}
 
@@ -1533,7 +1577,7 @@ export default function MindCanvas() {
       {!focusedId && !editMode && !quickCreate && (
         <motion.p className="absolute bottom-8 left-1/2 -translate-x-1/2 text-gray-400 font-light text-xs tracking-widest pointer-events-none select-none"
           initial={{ opacity: 0 }} animate={{ opacity: .4 }} transition={{ delay: 1.5, duration: 1.5 }}>
-          click to enter · double-click to create a child
+          click to enter · shift-click to create a child
         </motion.p>
       )}
 
