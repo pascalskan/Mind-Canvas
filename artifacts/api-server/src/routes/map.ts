@@ -1,35 +1,41 @@
 import { Router, type IRouter } from 'express';
-import fs from 'fs';
-import path from 'path';
-
-// Store the map in the workspace root so it survives server restarts.
-const MAP_FILE = path.resolve('.data', 'mind-canvas-map.json');
-
-function ensureDir() {
-  const dir = path.dirname(MAP_FILE);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-}
+import { db, mindCanvasMapTable } from '@workspace/db';
+import { eq } from 'drizzle-orm';
 
 const router: IRouter = Router();
 
 /** GET /api/map — returns { version, bubbles } or null if nothing saved yet. */
-router.get('/map', (_req, res) => {
+router.get('/map', async (_req, res) => {
   try {
-    if (!fs.existsSync(MAP_FILE)) { res.json(null); return; }
-    const raw = fs.readFileSync(MAP_FILE, 'utf8');
-    res.json(JSON.parse(raw));
-  } catch {
+    const rows = await db
+      .select()
+      .from(mindCanvasMapTable)
+      .where(eq(mindCanvasMapTable.id, 1))
+      .limit(1);
+    if (rows.length === 0) {
+      res.json(null);
+      return;
+    }
+    res.json(rows[0].data);
+  } catch (err) {
+    console.error('GET /api/map error:', err);
     res.json(null);
   }
 });
 
-/** PUT /api/map — saves { version, bubbles } to disk. */
-router.put('/map', (req, res) => {
+/** PUT /api/map — saves { version, bubbles } to the database. */
+router.put('/map', async (req, res) => {
   try {
-    ensureDir();
-    fs.writeFileSync(MAP_FILE, JSON.stringify(req.body), 'utf8');
+    await db
+      .insert(mindCanvasMapTable)
+      .values({ id: 1, data: req.body })
+      .onConflictDoUpdate({
+        target: mindCanvasMapTable.id,
+        set: { data: req.body, updatedAt: new Date() },
+      });
     res.json({ ok: true });
   } catch (err) {
+    console.error('PUT /api/map error:', err);
     res.status(500).json({ ok: false, error: String(err) });
   }
 });

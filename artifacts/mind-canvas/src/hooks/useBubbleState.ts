@@ -6,7 +6,7 @@
 // Extracted so the state transitions and the storage effect can be unit-tested
 // via renderHook without rendering the full canvas component tree.
 
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   saveBubbles,
   loadBubbles,
@@ -82,6 +82,11 @@ export function useBubbleState(initialBubbles: BubbleData[]): BubbleStateResult 
     bytes: 0,
   });
 
+  // Gate cloud PUTs behind the initial GET so we never overwrite the canonical
+  // Postgres row with a stale localStorage or default value on first load.
+  // Mirrors the mobile cloudSyncedRef pattern in BubbleContext.tsx.
+  const cloudSyncedRef = useRef(false);
+
   const byId = useMemo(
     () => Object.fromEntries(bubbles.map(b => [b.id, b])),
     [bubbles],
@@ -89,19 +94,27 @@ export function useBubbleState(initialBubbles: BubbleData[]): BubbleStateResult 
 
   // ── Cloud bootstrap: on mount, prefer cloud data over warm localStorage cache.
   useEffect(() => {
-    fetchFromCloud().then(cloudBubbles => {
-      if (cloudBubbles) setBubbles(cloudBubbles);
-    });
+    fetchFromCloud()
+      .then(cloudBubbles => {
+        if (cloudBubbles) setBubbles(cloudBubbles);
+      })
+      .finally(() => {
+        // Allow PUTs only after the initial GET has settled (success or failure).
+        cloudSyncedRef.current = true;
+      });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Persistence effect ────────────────────────────────────────────────────
   // Runs on every bubbles change — writes to localStorage immediately, then
   // pushes to the API server so the mobile app sees the latest data.
+  // Cloud PUTs are skipped until the bootstrap GET has settled.
   useEffect(() => {
     const result = saveBubbles(bubbles);
     setLastSave(result);
-    pushToCloud(bubbles);
+    if (cloudSyncedRef.current) {
+      pushToCloud(bubbles);
+    }
   }, [bubbles]);
 
   // ── addBubble ─────────────────────────────────────────────────────────────

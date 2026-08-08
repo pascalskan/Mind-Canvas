@@ -1,0 +1,48 @@
+import { db, mindCanvasMapTable } from "@workspace/db";
+import { logger } from "./logger";
+
+/** Initial map data from .data/mind-canvas-map.json — seeded once into the DB. */
+const INITIAL_MAP = {
+  version: 2,
+  bubbles: [
+    { id: "init0", depth: 0, label: "Career", color: "#8270db", x: 309.98075353807434, y: -407.3427914465803, scale: 1 },
+    { id: "init1", depth: 1, parentId: "init0", label: "Goals", color: "#8270db", x: 49.487695649698196, y: -452.4857746095578 },
+    { id: "init2", depth: 2, parentId: "init1", label: "Q1", color: "#8270db", x: 133.87374120268495, y: -396.98806910807554 },
+    { id: "init3", depth: 2, parentId: "init1", label: "Q2", color: "#8270db", x: 153.05283608027403, y: -500.68486212322995 },
+    { id: "init4", depth: 1, parentId: "init0", label: "Skills", color: "#8270db", x: 152.1220492092812, y: -621.5519067761415 },
+    { id: "init5", depth: 2, parentId: "init4", label: "Dev", color: "#8270db", x: 243.81849550170415, y: -579.2108895783841 },
+    { id: "init6", depth: 2, parentId: "init4", label: "Design", color: "#8270db", x: 283.98243504366445, y: -584.9313219457454 },
+    { id: "init7", depth: 1, parentId: "init0", label: "Network", color: "#8270db", x: 421.32245361185164, y: -633.4114127857603 },
+    { id: "init8", depth: 0, label: "Personal", color: "#db7094", x: 227.24638297167536, y: 478.88810505494854 },
+    { id: "init9", depth: 1, parentId: "init8", label: "Health", color: "#db7094", x: 480.3476425119515, y: 478.9271323374651 },
+    { id: "init10", depth: 2, parentId: "init9", label: "Fitness", color: "#db7094", x: 408.3322904851076, y: 558.9399554485043 },
+    { id: "init11", depth: 2, parentId: "init9", label: "Sleep", color: "#db7094", x: 396.21869426991924, y: 534.8098749112293 },
+    { id: "init12", depth: 1, parentId: "init8", label: "Travel", color: "#db7094", x: 215.6122151547861, y: 180.64779757597222 },
+    { id: "init13", depth: 1, parentId: "init8", label: "Hobbies", color: "#db7094", x: 366.72886550778117, y: 268.9611542447805 },
+    { id: "init14", depth: 0, label: "Projects", color: "#5ebaab", x: -531.0243353902455, y: -226.1614257697226 },
+    { id: "init15", depth: 1, parentId: "init14", label: "Ideas", color: "#5ebaab", x: -252.77426671062273, y: -114.55616306333818 },
+    { id: "init16", depth: 2, parentId: "init15", label: "App", color: "#5ebaab", x: -321.5557914542373, y: -203.18053599787137 },
+    { id: "init17", depth: 2, parentId: "init15", label: "Blog", color: "#5ebaab", x: -340.5634558241096, y: -183.9857482113601 },
+    { id: "init18", depth: 1, parentId: "init14", label: "Active", color: "#5ebaab", x: -542.4126467323575, y: 81.58132143398824 },
+    { id: "init19", depth: 1, parentId: "init14", label: "Done", color: "#5ebaab", x: -394.30403002721187, y: -11.632613456071159 },
+    { id: "msk15ynxo3pfw", depth: 1, parentId: "init0", label: "Test sublayer", x: 103.75536213102481, y: -262.5075855096565, color: "#8270db" },
+    { id: "msk17qha0wncw", depth: 2, parentId: "msk15ynxo3pfw", label: "Sublayer", x: 348.78398579026924, y: -233.6237390464989, color: "#8270db" },
+    { id: "msk1afzukw53i", depth: 1, parentId: "init8", label: "Tets", x: -6.492498778544052, y: 384.70671008674395, color: "#db7094" },
+    { id: "msk221aurpacq", depth: 3, parentId: "msk17qha0wncw", label: "Test sublayer", x: 398.86900021182817, y: -246.39446553396962, color: "#8270db" },
+    { id: "msk2272bi4iwl", depth: 4, parentId: "msk221aurpacq", label: "Test sublayer", x: 426.15155408308283, y: -192.95038628248372, color: "#8270db" },
+    { id: "msk22cjia0uf5", depth: 5, parentId: "msk2272bi4iwl", label: "Test sublayer", x: 511.51093149491, y: -28.8462352418235, color: "#8270db" },
+  ],
+};
+
+/**
+ * Idempotently seeds the mind_canvas_map table with the initial dataset.
+ * Does nothing if a row already exists (ON CONFLICT DO NOTHING).
+ * Throws on any database error so the server never starts without storage.
+ */
+export async function seedDatabase(): Promise<void> {
+  await db
+    .insert(mindCanvasMapTable)
+    .values({ id: 1, data: INITIAL_MAP })
+    .onConflictDoNothing();
+  logger.info("Database seed complete");
+}
