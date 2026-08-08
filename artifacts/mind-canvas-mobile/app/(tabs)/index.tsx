@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Platform, Pressable, StyleSheet, Text, TouchableOpacity, View,
 } from 'react-native';
@@ -44,23 +44,25 @@ export default function MainScreen() {
   // Build full ancestor chain, then show at most the 3 most-recent levels.
   // If there are more, show a single "…" button that jumps to the oldest
   // visible crumb's parent so the user can still navigate up quickly.
-
-  const fullBreadcrumb: { id: string; label: string; color: string }[] = [];
-  if (focusedId) {
-    let cur = byId[focusedId];
-    while (cur) {
-      fullBreadcrumb.unshift({ id: cur.id, label: cur.label, color: cur.color });
-      cur = cur.parentId ? byId[cur.parentId] : undefined as any;
-    }
-  }
+  // Memoised so unrelated renders do not recompute or produce transient values.
 
   const CRUMB_LIMIT = 3;
-  const hasEllipsis = fullBreadcrumb.length > CRUMB_LIMIT;
-  const breadcrumb  = hasEllipsis ? fullBreadcrumb.slice(-CRUMB_LIMIT) : fullBreadcrumb;
-  // The id to navigate to when the user taps "…" (parent of oldest shown crumb).
-  const ellipsisTargetId = hasEllipsis
-    ? (byId[breadcrumb[0].id]?.parentId ?? null)
-    : null;
+
+  const { breadcrumb, hasEllipsis, ellipsisTargetId } = useMemo(() => {
+    const full: { id: string; label: string; color: string }[] = [];
+    if (focusedId) {
+      let cur = byId[focusedId];
+      while (cur) {
+        full.unshift({ id: cur.id, label: cur.label, color: cur.color });
+        cur = cur.parentId ? byId[cur.parentId] : undefined as any;
+      }
+    }
+    const ellipsis = full.length > CRUMB_LIMIT;
+    const visible  = ellipsis ? full.slice(-CRUMB_LIMIT) : full;
+    // Parent of the oldest visible crumb — where "…" should navigate to.
+    const targetId = ellipsis ? (byId[visible[0].id]?.parentId ?? null) : null;
+    return { breadcrumb: visible, hasEllipsis: ellipsis, ellipsisTargetId: targetId };
+  }, [focusedId, byId]);
 
   // ── Edit handlers ──────────────────────────────────────────────────────────
 
@@ -117,7 +119,11 @@ export default function MainScreen() {
               <>
                 <Feather name="chevron-right" size={12} color="#d1d5db" style={styles.chevron} />
                 <TouchableOpacity
-                  onPress={() => { setFocusedId(ellipsisTargetId); Haptics.selectionAsync(); }}
+                  onPress={() => {
+                    if (ellipsisTargetId == null) return;
+                    setFocusedId(ellipsisTargetId);
+                    Haptics.selectionAsync();
+                  }}
                   style={styles.crumbBtn}
                 >
                   <Text style={styles.crumbEllipsis}>…</Text>
