@@ -60,8 +60,42 @@ function correctGrandchildPositions(
   bubbles: BubbleData[],
   focusedId: string | null,
 ): BubbleData[] {
+  // Mutable lookup — updated after each pass so later passes use corrected coords.
   const byIdLocal = Object.fromEntries(bubbles.map(b => [b.id, b]));
+  const corrected = new Map<string, { x: number; y: number }>();
+  const FAN_STEP  = Math.PI / 8; // 22.5° between pips
 
+  // ── Pass 1: Snap direct children of the focused bubble to the correct ring──
+  // Bubbles added while the user was NOT focused on their parent are placed
+  // using the wrong ring radius (pip-sized parent radius instead of focused
+  // display radius), so they appear inside the focused circle. Correct them
+  // by preserving their angle but snapping to the focused ring distance.
+  if (focusedId) {
+    const focused = byIdLocal[focusedId];
+    if (focused) {
+      const children = bubbles.filter(b => b.parentId === focusedId);
+      if (children.length > 0) {
+        const pr      = LAYER_SIZES_FOCUSED[0] / 2;
+        const cr      = LAYER_SIZES_FOCUSED[1] / 2;
+        const targetR = ringRadius(pr, cr, children.length);
+        for (const child of children) {
+          const dx   = child.x - focused.x;
+          const dy   = child.y - focused.y;
+          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+          if (Math.abs(dist - targetR) > 20) {
+            const angle = Math.atan2(dy, dx);
+            const fix   = { x: focused.x + Math.cos(angle) * targetR,
+                            y: focused.y + Math.sin(angle) * targetR };
+            corrected.set(child.id, fix);
+            // Update local lookup so Pass 2 uses corrected parent positions.
+            byIdLocal[child.id] = { ...byIdLocal[child.id], ...fix };
+          }
+        }
+      }
+    }
+  }
+
+  // ── Pass 2: Snap layer-2 grandchild pips to their parent's visual edge ─────
   let grandchildren: BubbleData[];
   let parentDisplayR: number;
   let gcDisplayR: number;
@@ -79,48 +113,44 @@ function correctGrandchildPositions(
     gcDisplayR     = LAYER_SIZES_OVERVIEW[2] / 2;
   }
 
-  if (!grandchildren.length) return bubbles;
+  if (grandchildren.length) {
+    const byParent = new Map<string, BubbleData[]>();
+    for (const gc of grandchildren) {
+      const pid = gc.parentId ?? '';
+      if (!byParent.has(pid)) byParent.set(pid, []);
+      byParent.get(pid)!.push(gc);
+    }
 
-  const byParent = new Map<string, BubbleData[]>();
-  for (const gc of grandchildren) {
-    const pid = gc.parentId ?? '';
-    if (!byParent.has(pid)) byParent.set(pid, []);
-    byParent.get(pid)!.push(gc);
-  }
+    for (const [pid, siblings] of byParent.entries()) {
+      const parent = byIdLocal[pid];
+      if (!parent) continue;
+      const targetR = ringRadius(parentDisplayR, gcDisplayR, siblings.length);
 
-  const corrected = new Map<string, { x: number; y: number }>();
-  const FAN_STEP  = Math.PI / 8; // 22.5° between pips
+      // Pips always fan out OPPOSITE from the grandparent so it's visually
+      // clear which parent they belong to.
+      const gp = byIdLocal[parent.parentId ?? ''];
+      const baseAngle = gp
+        ? Math.atan2(parent.y - gp.y, parent.x - gp.x)
+        : -Math.PI / 2;
 
-  for (const [pid, siblings] of byParent.entries()) {
-    const parent = byIdLocal[pid];
-    if (!parent) continue;
-    const targetR = ringRadius(parentDisplayR, gcDisplayR, siblings.length);
+      const n = siblings.length;
+      siblings.forEach((gc, i) => {
+        const offset   = (i - (n - 1) / 2) * FAN_STEP;
+        const angle    = baseAngle + offset;
+        const targetX  = parent.x + Math.cos(angle) * targetR;
+        const targetY  = parent.y + Math.sin(angle) * targetR;
 
-    // Pips always fan out OPPOSITE from the grandparent so it's visually
-    // clear which parent they belong to.
-    const gp = byIdLocal[parent.parentId ?? ''];
-    const baseAngle = gp
-      ? Math.atan2(parent.y - gp.y, parent.x - gp.x) // away from grandparent
-      : -Math.PI / 2;
+        const dx = gc.x - parent.x;
+        const dy = gc.y - parent.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        const curAngle = Math.atan2(dy, dx);
+        const angleDiff = Math.abs(((angle - curAngle + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
 
-    const n = siblings.length;
-    siblings.forEach((gc, i) => {
-      const offset   = (i - (n - 1) / 2) * FAN_STEP;
-      const angle    = baseAngle + offset;
-      const targetX  = parent.x + Math.cos(angle) * targetR;
-      const targetY  = parent.y + Math.sin(angle) * targetR;
-
-      const dx = gc.x - parent.x;
-      const dy = gc.y - parent.y;
-      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-      const curAngle = Math.atan2(dy, dx);
-      // Normalised angular difference
-      const angleDiff = Math.abs(((angle - curAngle + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
-
-      if (Math.abs(dist - targetR) > 15 || angleDiff > Math.PI / 9) {
-        corrected.set(gc.id, { x: targetX, y: targetY });
-      }
-    });
+        if (Math.abs(dist - targetR) > 15 || angleDiff > Math.PI / 9) {
+          corrected.set(gc.id, { x: targetX, y: targetY });
+        }
+      });
+    }
   }
 
   if (!corrected.size) return bubbles;
@@ -201,6 +231,30 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
     if (!loaded) return;
     setBubbles(prev => correctGrandchildPositions(prev, focusedId));
   }, [focusedId, loaded]);
+
+  // Mirrors cloudSaveOk state as a ref so the polling closure stays current.
+  const cloudSaveOkRef = useRef(true);
+  cloudSaveOkRef.current = cloudSaveOk;
+
+  // ── Cross-device sync polling ────────────────────────────────────────────
+  // Every 30 s fetch the server's canonical state. If it differs from what we
+  // have locally (another device made changes) AND all our own saves are
+  // confirmed committed, apply the remote state so both platforms stay in sync.
+  useEffect(() => {
+    const timer = setInterval(async () => {
+      if (!cloudSyncedRef.current) return;   // still bootstrapping
+      if (!cloudSaveOkRef.current) return;   // local edits not yet committed
+      const cloud = await fetchFromCloud();
+      if (!cloud) return;
+      const cur    = bubblesRef.current;
+      // Compare by sorted id+label fingerprint — detects adds, deletes, renames.
+      const sig = (bs: BubbleData[]) =>
+        bs.map(b => `${b.id}~${b.label}~${b.color}`).sort().join('|');
+      if (sig(cloud) !== sig(cur)) setBubbles(cloud);
+    }, 30_000);
+    return () => clearInterval(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Save on every change (after initial load + cloud sync)
   useEffect(() => {

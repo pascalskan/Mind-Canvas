@@ -41,15 +41,26 @@ export default function MainScreen() {
   const bottomInset = isWeb ? 34 : insets.bottom;
 
   // ── Breadcrumb ─────────────────────────────────────────────────────────────
+  // Build full ancestor chain, then show at most the 3 most-recent levels.
+  // If there are more, show a single "…" button that jumps to the oldest
+  // visible crumb's parent so the user can still navigate up quickly.
 
-  const breadcrumb: { id: string; label: string; color: string }[] = [];
+  const fullBreadcrumb: { id: string; label: string; color: string }[] = [];
   if (focusedId) {
     let cur = byId[focusedId];
     while (cur) {
-      breadcrumb.unshift({ id: cur.id, label: cur.label, color: cur.color });
+      fullBreadcrumb.unshift({ id: cur.id, label: cur.label, color: cur.color });
       cur = cur.parentId ? byId[cur.parentId] : undefined as any;
     }
   }
+
+  const CRUMB_LIMIT = 3;
+  const hasEllipsis = fullBreadcrumb.length > CRUMB_LIMIT;
+  const breadcrumb  = hasEllipsis ? fullBreadcrumb.slice(-CRUMB_LIMIT) : fullBreadcrumb;
+  // The id to navigate to when the user taps "…" (parent of oldest shown crumb).
+  const ellipsisTargetId = hasEllipsis
+    ? (byId[breadcrumb[0].id]?.parentId ?? null)
+    : null;
 
   // ── Edit handlers ──────────────────────────────────────────────────────────
 
@@ -102,6 +113,17 @@ export default function MainScreen() {
             >
               <Feather name="home" size={14} color="#6b7280" />
             </TouchableOpacity>
+            {hasEllipsis && (
+              <>
+                <Feather name="chevron-right" size={12} color="#d1d5db" style={styles.chevron} />
+                <TouchableOpacity
+                  onPress={() => { setFocusedId(ellipsisTargetId); Haptics.selectionAsync(); }}
+                  style={styles.crumbBtn}
+                >
+                  <Text style={styles.crumbEllipsis}>…</Text>
+                </TouchableOpacity>
+              </>
+            )}
             {breadcrumb.map((crumb, i) => (
               <React.Fragment key={crumb.id}>
                 <Feather name="chevron-right" size={12} color="#d1d5db" style={styles.chevron} />
@@ -225,6 +247,10 @@ const styles = StyleSheet.create({
   crumbText: {
     fontSize: 13, fontFamily: 'Inter_400Regular',
     color: '#9ca3af', maxWidth: 100,
+  },
+  crumbEllipsis: {
+    fontSize: 14, fontFamily: 'Inter_400Regular',
+    color: '#9ca3af', paddingHorizontal: 2,
   },
   crumbTextActive: { color: '#374151', fontFamily: 'Inter_500Medium' },
   hintWrap: {

@@ -134,6 +134,29 @@ export function useBubbleState(initialBubbles: BubbleData[]): BubbleStateResult 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Mirrors cloudSaveOk state as a ref so the polling closure stays current.
+  const cloudSaveOkRef = useRef(true);
+  cloudSaveOkRef.current = cloudSaveOk;
+
+  // ── Cross-device sync polling ─────────────────────────────────────────────
+  // Every 30 s fetch the canonical server state. If it differs from our local
+  // copy AND all our own saves are committed, apply it — picks up changes made
+  // on the mobile app (or another browser tab) without a full page reload.
+  useEffect(() => {
+    const timer = setInterval(async () => {
+      if (!cloudSyncedRef.current) return;  // still bootstrapping
+      if (!cloudSaveOkRef.current) return;  // local edits not yet committed
+      const cloud = await fetchFromCloud();
+      if (!cloud) return;
+      const cur = bubblesRef.current;
+      const sig = (bs: BubbleData[]) =>
+        bs.map(b => `${b.id}~${b.label}~${b.color}`).sort().join('|');
+      if (sig(cloud) !== sig(cur)) setBubbles(cloud);
+    }, 30_000);
+    return () => clearInterval(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ── Persistence effect ────────────────────────────────────────────────────
   // Runs on every bubbles change — writes to localStorage immediately, then
   // pushes to the API server so the mobile app sees the latest data.
