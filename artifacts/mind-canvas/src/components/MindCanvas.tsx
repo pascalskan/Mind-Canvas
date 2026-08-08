@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import { motion, useMotionValue, animate, motionValue, type MotionValue } from 'framer-motion';
+import LZString from 'lz-string';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 // Everything on the canvas is a bubble. There is no "content" — a note, an item,
@@ -271,7 +272,7 @@ const INITIAL_BUBBLES = buildBubbles();
 // change can detect and discard stale saves instead of silently corrupting them.
 
 const STORAGE_KEY     = 'mind-canvas-bubbles';
-const STORAGE_VERSION = 1;
+const STORAGE_VERSION = 2;
 
 interface StoredState {
   version: number;
@@ -282,8 +283,23 @@ function loadBubbles(): BubbleData[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return INITIAL_BUBBLES;
-    const parsed: StoredState = JSON.parse(raw);
-    if (parsed.version !== STORAGE_VERSION) return INITIAL_BUBBLES;
+
+    // Try decompressing first (version 2+). If that yields nothing, fall back
+    // to treating the stored value as plain JSON (version 1 legacy saves).
+    let json: string | null = null;
+    try {
+      json = LZString.decompress(raw);
+    } catch { /* decompression threw — treat as legacy */ }
+
+    if (!json) {
+      // Legacy uncompressed save — parse directly and migrate gracefully.
+      json = raw;
+    }
+
+    const parsed: StoredState = JSON.parse(json);
+    // Accept both the current version and the previous uncompressed version (1)
+    // so a user who hasn't saved yet since the upgrade doesn't lose their data.
+    if (parsed.version !== STORAGE_VERSION && parsed.version !== 1) return INITIAL_BUBBLES;
     if (!Array.isArray(parsed.bubbles) || parsed.bubbles.length === 0) return INITIAL_BUBBLES;
     return parsed.bubbles;
   } catch {
@@ -294,7 +310,9 @@ function loadBubbles(): BubbleData[] {
 function saveBubbles(bubbles: BubbleData[]): boolean {
   try {
     const state: StoredState = { version: STORAGE_VERSION, bubbles };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    const json = JSON.stringify(state);
+    const compressed = LZString.compress(json);
+    localStorage.setItem(STORAGE_KEY, compressed);
     return true;
   } catch {
     // Storage full or unavailable — caller decides how to surface this.
