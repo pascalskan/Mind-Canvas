@@ -789,6 +789,13 @@ function AddPanel({ bubbles, onAdd, onClose, initialParentPath = [], quickCreate
   const [label, setLabel]           = useState('');
   const [parentPath, setParentPath] = useState<string[]>(initialParentPath);
 
+  // Selecting a parent reveals its children in a new section BELOW the fold of
+  // this fixed-height list — without this, the click looks like it did nothing.
+  const levelsRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    levelsRef.current?.scrollTo({ top: levelsRef.current.scrollHeight, behavior: 'smooth' });
+  }, [parentPath]);
+
   const byId  = useMemo(() => Object.fromEntries(bubbles.map(b => [b.id, b])), [bubbles]);
   const roots = bubbles.filter(b => b.depth === 0);
 
@@ -862,7 +869,7 @@ function AddPanel({ bubbles, onAdd, onClose, initialParentPath = [], quickCreate
           onKeyDown={e => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') onClose(); }}
           className="w-full bg-transparent border-b border-gray-200 text-gray-700 font-light text-sm outline-none pb-1 mb-4 placeholder-gray-300"/>
 
-        {!quickCreate && <div className="max-h-72 overflow-y-auto pr-1 -mr-1">
+        {!quickCreate && <div ref={levelsRef} className="max-h-72 overflow-y-auto pr-1 -mr-1">
           <p className="text-xs text-gray-400 font-light mb-2">Add to</p>
           <div className="flex flex-col gap-1.5 mb-3">
             <Row text="New root bubble" selected={parentPath.length === 0} onSelect={() => setParentPath([])}/>
@@ -981,12 +988,11 @@ export default function MindCanvas() {
       if (now - last < 16) return;
       last = now;
 
-      const t  = (now - t0) / 1000;
-      const em = editModeRef.current;
+      const t = (now - t0) / 1000;
 
-      // Edit mode freezes the drift so bubbles hold still while you work.
+      // Bubbles keep drifting whether or not edit mode is active.
       const { list, map, pos, sizeOf, bandOf } =
-        layoutView(bubblesRef.current, focusedIdRef.current, em ? null : t);
+        layoutView(bubblesRef.current, focusedIdRef.current, t);
 
       // Push everything apart until nothing overlaps.
       resolveCollisions(list, map, pos, draggingRef.current, sizeOf, bandOf);
