@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Dimensions, PanResponder, StyleSheet, View } from 'react-native';
-import Svg, { Line } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { useBubbles } from '@/context/BubbleContext';
 import { BubbleNode } from '@/components/BubbleNode';
@@ -466,55 +465,6 @@ export default function CanvasView({ onLongPressAddChild }: Props) {
       {/* SVG coordinate field background */}
       <CanvasBackground camera={cam} />
 
-      {/* ── Connection lines (parent → child) — behind bubbles ─────────── */}
-      <Svg
-        width={SW} height={SH}
-        style={styles.connectorLayer}
-        pointerEvents="none"
-      >
-        {visibleBubbles.map(b => {
-          if (!b.parentId) return null;
-          const parent = byId[b.parentId];
-          if (!parent || !isInThreeLayerView(parent, focusedId, byId)) return null;
-
-          // Dragged bubble: use current drag world position for its line endpoint
-          const bx = b.id === draggingId
-            ? dragWX.current
-            : draggingSubtreeSet.has(b.id)
-              ? b.x + (dragWX.current - bubbleDragStart.current.wx)
-              : b.x;
-          const by_ = b.id === draggingId
-            ? dragWY.current
-            : draggingSubtreeSet.has(b.id)
-              ? b.y + (dragWY.current - bubbleDragStart.current.wy)
-              : b.y;
-
-          const px_ = parent.id === draggingId
-            ? dragWX.current
-            : draggingSubtreeSet.has(parent.id)
-              ? parent.x + (dragWX.current - bubbleDragStart.current.wx)
-              : parent.x;
-          const py_ = parent.id === draggingId
-            ? dragWY.current
-            : draggingSubtreeSet.has(parent.id)
-              ? parent.y + (dragWY.current - bubbleDragStart.current.wy)
-              : parent.y;
-
-          const { sx: x1, sy: y1 } = toScreen(px_, py_, cam);
-          const { sx: x2, sy: y2 } = toScreen(bx, by_, cam);
-
-          return (
-            <Line
-              key={b.id}
-              x1={x1} y1={y1} x2={x2} y2={y2}
-              stroke={b.color}
-              strokeWidth={1.5}
-              opacity={0.35}
-            />
-          );
-        })}
-      </Svg>
-
       {/* ── Static bubbles ──────────────────────────────────────────────── */}
       {staticBubbles.map(b => {
         const worldDisplaySize = getBubbleDisplaySize(b, focusedId, byId);
@@ -622,11 +572,6 @@ export default function CanvasView({ onLongPressAddChild }: Props) {
 const styles = StyleSheet.create({
   container: {
     ...StyleSheet.absoluteFillObject,
-  },
-  connectorLayer: {
-    position: 'absolute',
-    top: 0, left: 0,
-    zIndex: 1,
   },
   dragBubble: {
     position: 'absolute',

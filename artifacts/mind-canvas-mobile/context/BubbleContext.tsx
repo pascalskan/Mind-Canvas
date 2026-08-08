@@ -60,22 +60,31 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
   const focusedIdRef = useRef(focusedId);
   focusedIdRef.current = focusedId;
 
+  // Gates cloud pushes — stays false until the initial cloud fetch resolves,
+  // preventing the local/demo bubbles from overwriting the user's cloud data.
+  const cloudSyncedRef = useRef(false);
+
   // Load persisted data on mount
   useEffect(() => {
     loadBubbles(INITIAL).then(local => {
       setBubbles(local);
       setLoaded(true);
-      fetchFromCloud().then(cloud => {
-        if (cloud) setBubbles(cloud);
-      });
+      fetchFromCloud()
+        .then(cloud => {
+          if (cloud) setBubbles(cloud);
+        })
+        .finally(() => {
+          // Allow cloud pushes only after we've had a chance to pull first
+          cloudSyncedRef.current = true;
+        });
     });
   }, []);
 
-  // Save on every change (after initial load)
+  // Save on every change (after initial load + cloud sync)
   useEffect(() => {
     if (!loaded) return;
     saveBubbles(bubbles);
-    pushToCloud(bubbles);
+    if (cloudSyncedRef.current) pushToCloud(bubbles);
   }, [bubbles, loaded]);
 
   const byId = useMemo(
