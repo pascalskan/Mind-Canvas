@@ -291,12 +291,14 @@ function loadBubbles(): BubbleData[] {
   }
 }
 
-function saveBubbles(bubbles: BubbleData[]): void {
+function saveBubbles(bubbles: BubbleData[]): boolean {
   try {
     const state: StoredState = { version: STORAGE_VERSION, bubbles };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    return true;
   } catch {
-    // Storage full or unavailable — fail silently; the canvas still works.
+    // Storage full or unavailable — caller decides how to surface this.
+    return false;
   }
 }
 
@@ -1082,6 +1084,8 @@ export default function MindCanvas() {
   const [editSelection,  setEditSelection]  = useState<string | null>(null);
   const [quickCreate,    setQuickCreate]    = useState<{ id: string; parentId: string; anchor: { x: number; y: number } } | null>(null);
   const [showColorPicker, setShowColorPicker] = useState(false);
+  const [saveFailedToast, setSaveFailedToast] = useState(false);
+  const saveToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const cameraX = useMotionValue(typeof window !== 'undefined' ? window.innerWidth  / 2 : 640);
@@ -1167,7 +1171,12 @@ export default function MindCanvas() {
 
   // Persist to localStorage on every change so the canvas survives page refreshes.
   useEffect(() => {
-    saveBubbles(bubbles);
+    const ok = saveBubbles(bubbles);
+    if (!ok) {
+      setSaveFailedToast(true);
+      if (saveToastTimer.current) clearTimeout(saveToastTimer.current);
+      saveToastTimer.current = setTimeout(() => setSaveFailedToast(false), 5000);
+    }
   }, [bubbles]);
 
   // ── Ancestors / descendants ──────────────────────────────────────────────
@@ -1689,6 +1698,16 @@ export default function MindCanvas() {
           className="absolute top-5 left-1/2 -translate-x-1/2 z-50 pointer-events-none select-none text-center"
           style={{ background: 'rgba(255,255,255,.84)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 20, padding: '8px 18px', boxShadow: '0 2px 16px rgba(0,0,0,.06),inset 0 0 0 1px rgba(130,110,180,.25)', fontSize: 12, color: 'hsl(260,40%,50%)', letterSpacing: '.04em', fontWeight: 300, maxWidth: 'calc(100vw - 32px)' }}>
           Edit mode · double-tap to lock · tap name to rename · × deletes
+        </motion.div>
+      )}
+
+      {/* Save-failed toast */}
+      {saveFailedToast && (
+        <motion.div
+          initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }}
+          className="absolute bottom-24 left-1/2 -translate-x-1/2 z-50 pointer-events-none select-none text-center"
+          style={{ background: 'rgba(255,248,245,.94)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 20, padding: '9px 20px', boxShadow: '0 2px 20px rgba(0,0,0,.09),inset 0 0 0 1px rgba(200,80,60,.22)', fontSize: 12, color: 'hsl(12,55%,40%)', letterSpacing: '.03em', fontWeight: 300, maxWidth: 'calc(100vw - 32px)', whiteSpace: 'nowrap' }}>
+          ⚠ Map could not be saved — storage may be full. Your changes exist until you refresh.
         </motion.div>
       )}
 
