@@ -379,7 +379,7 @@ export default function CanvasView() {
   return (
     <View style={styles.container} {...panResponder.panHandlers}>
       {/* SVG coordinate field background — sits behind all bubbles */}
-      <CanvasBackground camera={cam} screenWidth={SW} screenHeight={SH} />
+      <CanvasBackground camera={cam} />
 
       {/* Bubbles — rendered in screen space for Expo-Web compatibility */}
       {visibleBubbles.map(b => {
