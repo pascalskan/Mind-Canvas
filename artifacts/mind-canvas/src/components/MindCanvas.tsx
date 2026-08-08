@@ -837,14 +837,19 @@ function AddPanel({ bubbles, onAdd, onClose, initialParentPath = [], quickCreate
     onClose();
   };
 
+  // A real <button>, not a styled <div onClick>: divs that only react to
+  // :hover/onClick are the classic iOS Safari trap where the first tap just
+  // registers the hover state and only a second tap actually fires the click.
+  // py-1.5 -my-1.5 widens the tap target without shifting the visible layout.
   const Row = ({ text, selected, onSelect, dim }: { text: string; selected: boolean; onSelect: () => void; dim?: boolean }) => (
-    <div className="flex items-center gap-2 cursor-pointer group" onClick={onSelect}>
+    <button type="button" onClick={onSelect}
+      className="w-full flex items-center gap-2 cursor-pointer group py-1.5 -my-1.5 text-left">
       <div className="w-3 h-3 rounded-full border flex items-center justify-center flex-shrink-0 transition-all"
         style={{ borderColor: selected ? '#9ca3af' : '#d1d5db', background: selected ? '#9ca3af' : 'transparent' }}>
         {selected && <div className="w-1.5 h-1.5 rounded-full bg-white"/>}
       </div>
       <span className={`text-sm font-light transition-colors ${dim ? 'text-gray-400' : 'text-gray-500'} group-hover:text-gray-700`}>{text}</span>
-    </div>
+    </button>
   );
 
   return (
