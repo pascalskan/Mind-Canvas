@@ -804,6 +804,12 @@ function AddPanel({ bubbles, onAdd, onClose, initialParentPath = [], quickCreate
   const [label, setLabel]           = useState('');
   const [parentPath, setParentPath] = useState<string[]>(initialParentPath);
 
+  // Compute the top offset ONCE at mount. On iOS, showing the keyboard shrinks
+  // window.innerHeight mid-interaction by ~200px, which shifts the panel up by
+  // that much on every re-render and causes every row tap to miss. Storing the
+  // value in a ref prevents any later movement once rows are visible.
+  const stableTop = useRef(panelTop());
+
   // Selecting a parent reveals its children in a new section that may sit below
   // the fold. Scroll by the MINIMUM needed ('nearest') rather than jumping to
   // the bottom: every pixel of scroll slides the rows out from under the
@@ -882,7 +888,7 @@ function AddPanel({ bubbles, onAdd, onClose, initialParentPath = [], quickCreate
         width: 292,
         left: Math.max(16, Math.min(anchor.x + 44, window.innerWidth - 308)),
         top: Math.max(16, Math.min(anchor.y - 120, window.innerHeight - 290)),
-      } : { width: 292, top: panelTop(), right: 24 }}
+      } : { width: 292, top: stableTop.current, right: 24 }}
       onPointerDown={e => e.stopPropagation()}>
       <div className="p-5"
         style={{ background: 'rgba(255,255,255,.88)', backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)', borderRadius: 18, boxShadow: '0 8px 40px rgba(0,0,0,.08),inset 0 0 0 1px rgba(255,255,255,.9)' }}>
@@ -891,7 +897,7 @@ function AddPanel({ bubbles, onAdd, onClose, initialParentPath = [], quickCreate
           {quickCreate ? 'Name new bubble' : 'New bubble'}
         </p>
 
-        <input autoFocus placeholder="Label…" value={label} onChange={e => setLabel(e.target.value)}
+        <input placeholder="Label…" value={label} onChange={e => setLabel(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') onClose(); }}
           className="w-full bg-transparent border-b border-gray-200 text-gray-700 font-light text-sm outline-none pb-1 mb-4 placeholder-gray-300"/>
 
