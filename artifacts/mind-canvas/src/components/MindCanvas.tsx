@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef, useCallback, useMemo, memo } from '
 import { motion, useMotionValue, animate, motionValue, type MotionValue } from 'framer-motion';
 import {
   clearBubbles,
+  exportBubbles,
+  importBubbles,
   STORAGE_QUOTA_BYTES,
   STORAGE_WARN_RATIO,
   type BubbleData,
@@ -1036,7 +1038,8 @@ export default function MindCanvas() {
   });
   const saveToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const containerRef = useRef<HTMLDivElement>(null);
+  const containerRef  = useRef<HTMLDivElement>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
   const cameraX = useMotionValue(typeof window !== 'undefined' ? window.innerWidth  / 2 : 640);
   const cameraY = useMotionValue(typeof window !== 'undefined' ? window.innerHeight / 2 : 360);
   const cameraScale = useMotionValue(0.5);
@@ -1855,11 +1858,49 @@ export default function MindCanvas() {
         />
       )}
 
+      {/* Hidden file input for import */}
+      <input
+        ref={importInputRef}
+        type="file"
+        accept=".json,application/json"
+        style={{ display: 'none' }}
+        onChange={async e => {
+          const file = e.target.files?.[0];
+          if (!file) return;
+          // Reset so the same file can be re-selected if needed.
+          e.target.value = '';
+          const imported = await importBubbles(file);
+          if (!imported) {
+            window.alert('Could not read that file. Make sure it was exported from Mind Canvas.');
+            return;
+          }
+          const confirmed = window.confirm(
+            `Replace the current canvas with the imported map?\n\n` +
+            `The imported file contains ${imported.length} bubble${imported.length === 1 ? '' : 's'}. ` +
+            `Your current map will be replaced.`,
+          );
+          if (!confirmed) return;
+          setBubbles(imported);
+          setFocusedId(null);
+          setEditMode(false);
+          setEditingId(null);
+          setEditSelection(null);
+          setQuickCreate(null);
+          setShowAddPanel(false);
+        }}
+      />
+
       {/* Buttons */}
       <div className="absolute bottom-6 right-6 z-50 flex gap-3 pointer-events-auto"
         onPointerDown={e => e.stopPropagation()}>
         {editMode ? (
           <>
+            <motion.button style={pillBase}
+              className="flex items-center gap-2 font-light text-gray-500"
+              whileHover={{ scale: 1.04 }} whileTap={{ scale: .97 }}
+              onClick={() => exportBubbles(bubbles)}>
+              <span style={{ fontSize: 13, lineHeight: 1, opacity: .7 }}>↓</span> Export
+            </motion.button>
             <motion.button style={{ ...pillBase, color: 'hsl(0,45%,55%)' }}
               className="flex items-center gap-2 font-light"
               whileHover={{ scale: 1.04 }} whileTap={{ scale: .97 }}
@@ -1894,6 +1935,18 @@ export default function MindCanvas() {
                 setShowAddPanel(true);
               }}>
               <span style={{ fontSize: 18, lineHeight: 1 }}>+</span> Add bubble
+            </motion.button>
+            <motion.button style={pillBase}
+              className="flex items-center gap-2 font-light text-gray-500"
+              whileHover={{ scale: 1.04 }} whileTap={{ scale: .97 }}
+              onClick={() => exportBubbles(bubbles)}>
+              <span style={{ fontSize: 13, lineHeight: 1, opacity: .7 }}>↓</span> Export
+            </motion.button>
+            <motion.button style={pillBase}
+              className="flex items-center gap-2 font-light text-gray-500"
+              whileHover={{ scale: 1.04 }} whileTap={{ scale: .97 }}
+              onClick={() => importInputRef.current?.click()}>
+              <span style={{ fontSize: 13, lineHeight: 1, opacity: .7 }}>↑</span> Import
             </motion.button>
             <motion.button style={pillBase}
               className="flex items-center gap-2 font-light text-gray-500"

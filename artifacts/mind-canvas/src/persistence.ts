@@ -105,3 +105,115 @@ export function loadBubbles(initialBubbles: BubbleData[]): BubbleData[] {
 export function clearBubbles(): void {
   try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
 }
+
+/**
+ * Triggers a browser download of the current bubble tree as a JSON file.
+ * The file format is identical to StoredState so it can be re-imported.
+ */
+export function exportBubbles(bubbles: BubbleData[]): void {
+  const state: StoredState = { version: STORAGE_VERSION, bubbles };
+  const json = JSON.stringify(state, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `mind-canvas-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Validates that an individual bubble object has all required fields with the
+ * correct types. Returns true only when the object is a well-formed BubbleData.
+ */
+function isValidBubble(b: unknown): b is BubbleData {
+  if (!b || typeof b !== 'object') return false;
+  const o = b as Record<string, unknown>;
+  if (typeof o.id     !== 'string' || !o.id)     return false;
+  if (typeof o.label  !== 'string')               return false;
+  if (typeof o.x      !== 'number')               return false;
+  if (typeof o.y      !== 'number')               return false;
+  if (typeof o.color  !== 'string' || !o.color)   return false;
+  if (typeof o.depth  !== 'number' || o.depth < 0 || !Number.isFinite(o.depth)) return false;
+  // Optional fields — must have the right type when present.
+  if (o.parentId !== undefined && typeof o.parentId !== 'string') return false;
+  if (o.angle    !== undefined && typeof o.angle    !== 'number') return false;
+  if (o.radial   !== undefined && typeof o.radial   !== 'number') return false;
+  if (o.scale    !== undefined && typeof o.scale    !== 'number') return false;
+  return true;
+}
+
+/**
+ * Validates the bubble graph:
+ *  - No duplicate IDs.
+ *  - Every parentId references a known bubble.
+ *  - No cyclic parent chains (prevents infinite loops in traversal).
+ * Returns true when the graph is safe to load.
+ */
+function isValidBubbleGraph(bubbles: BubbleData[]): boolean {
+  const ids = new Set<string>();
+  for (const b of bubbles) {
+    if (ids.has(b.id)) return false; // duplicate ID
+    ids.add(b.id);
+  }
+  // All parentId references must point to known IDs.
+  for (const b of bubbles) {
+    if (b.parentId !== undefined && !ids.has(b.parentId)) return false;
+  }
+  // Cycle detection: walk each bubble's parent chain.
+  const byId = new Map(bubbles.map(b => [b.id, b]));
+  for (const start of bubbles) {
+    const visited = new Set<string>();
+    let cur: BubbleData | undefined = start;
+    while (cur?.parentId) {
+      if (visited.has(cur.id)) return false; // cycle detected
+      visited.add(cur.id);
+      cur = byId.get(cur.parentId);
+    }
+  }
+  return true;
+}
+
+/**
+ * Reads and validates a JSON file previously exported by exportBubbles.
+ * Returns the parsed bubble array on success, or null if the file is invalid.
+ * Checks: version, nonempty array, per-bubble schema, no duplicate IDs,
+ * no orphan parentId references, no cyclic parent chains.
+ * Never throws — all errors are caught and returned as null.
+ */
+export function importBubbles(file: File): Promise<BubbleData[] | null> {
+  return new Promise(resolve => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const text = reader.result as string;
+        const parsed: StoredState = JSON.parse(text);
+        if (
+          (parsed.version !== STORAGE_VERSION && parsed.version !== 1) ||
+          !Array.isArray(parsed.bubbles) ||
+          parsed.bubbles.length === 0
+        ) {
+          resolve(null);
+          return;
+        }
+        // Per-bubble schema validation.
+        if (!parsed.bubbles.every(isValidBubble)) {
+          resolve(null);
+          return;
+        }
+        // Graph integrity check.
+        if (!isValidBubbleGraph(parsed.bubbles)) {
+          resolve(null);
+          return;
+        }
+        resolve(parsed.bubbles);
+      } catch {
+        resolve(null);
+      }
+    };
+    reader.onerror = () => resolve(null);
+    reader.readAsText(file);
+  });
+}
