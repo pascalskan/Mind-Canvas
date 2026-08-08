@@ -76,7 +76,11 @@ function isValidBubble(b: unknown): b is BubbleData {
   if (typeof o.y      !== 'number')               return false;
   if (typeof o.color  !== 'string' || !o.color)   return false;
   if (typeof o.depth  !== 'number' || o.depth < 0 || !Number.isFinite(o.depth)) return false;
+  // Optional fields — must have the correct type when present.
   if (o.parentId !== undefined && typeof o.parentId !== 'string') return false;
+  if (o.angle    !== undefined && typeof o.angle    !== 'number') return false;
+  if (o.radial   !== undefined && typeof o.radial   !== 'number') return false;
+  if (o.scale    !== undefined && typeof o.scale    !== 'number') return false;
   return true;
 }
 

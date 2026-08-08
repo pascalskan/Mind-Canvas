@@ -140,9 +140,18 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
   const focusedIdRef = useRef(focusedId);
   focusedIdRef.current = focusedId;
 
+  // Always-current snapshot of bubbles for async callbacks that outlive renders.
+  const bubblesRef = useRef<BubbleData[]>(INITIAL);
+  bubblesRef.current = bubbles;
+
   // Gates cloud pushes — stays false until the initial cloud fetch resolves,
   // preventing the local/demo bubbles from overwriting the user's cloud data.
   const cloudSyncedRef = useRef(false);
+
+  // Set to true by any user-initiated mutation that fires BEFORE the cloud
+  // bootstrap GET resolves. When set, we skip the cloud overwrite and push the
+  // user's local state up instead so no edits are lost.
+  const editedBeforeCloudRef = useRef(false);
 
   // Load persisted data on mount
   useEffect(() => {
@@ -152,6 +161,12 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
       fetchFromCloud()
         .then(cloud => {
           if (!cloud) return;
+
+          // If the user already made edits during the fetch window, their data
+          // is more recent than what we got back — keep it and push it up once
+          // the gate opens in .finally() below.
+          if (editedBeforeCloudRef.current) return;
+
           // 1. Push overlapping bubbles apart (web positions use smaller radii)
           const bid2 = Object.fromEntries(cloud.map(b => [b.id, b]));
           const resolved = resolveCollisions(cloud, null, bid2, null, 6);
@@ -162,7 +177,9 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
           setBubbles(correctGrandchildPositions(deduped, null));
         })
         .finally(() => {
-          // Allow cloud pushes only after we've had a chance to pull first
+          // Allow cloud pushes only after we've had a chance to pull first.
+          // If the user edited before cloud resolved, their state is already in
+          // bubblesRef — the save effect will push it on the next render.
           cloudSyncedRef.current = true;
         });
     });
@@ -178,7 +195,9 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
   // Save on every change (after initial load + cloud sync)
   useEffect(() => {
     if (!loaded) return;
-    saveBubbles(bubbles);
+    saveBubbles(bubbles).then(ok => {
+      if (!ok) console.warn('[MindCanvas] AsyncStorage write failed — data is still safe in cloud.');
+    });
     if (cloudSyncedRef.current) pushToCloud(bubbles);
   }, [bubbles, loaded]);
 
@@ -194,6 +213,7 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
     parentId: string | null,
     opts?: { color?: string; scale?: number },
   ) => {
+    editedBeforeCloudRef.current = true;
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
     setBubbles(prev => {
@@ -274,6 +294,7 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const deleteBubble = useCallback((id: string) => {
+    editedBeforeCloudRef.current = true;
     setBubbles(prev => {
       const toDelete = new Set<string>([id]);
       let changed = true;
@@ -294,23 +315,28 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
   const renameBubble = useCallback((id: string, label: string) => {
     const trimmed = label.trim();
     if (!trimmed) return;
+    editedBeforeCloudRef.current = true;
     setBubbles(prev => prev.map(b => b.id === id ? { ...b, label: trimmed } : b));
   }, []);
 
   const recolorBubble = useCallback((id: string, color: string) => {
+    editedBeforeCloudRef.current = true;
     setBubbles(prev => prev.map(b => b.id === id ? { ...b, color } : b));
   }, []);
 
   const resizeBubble = useCallback((id: string, scale: number) => {
+    editedBeforeCloudRef.current = true;
     setBubbles(prev => prev.map(b => b.id === id ? { ...b, scale } : b));
   }, []);
 
   const updateBubblePosition = useCallback((id: string, pos: { x: number; y: number }) => {
+    editedBeforeCloudRef.current = true;
     setBubbles(prev => prev.map(b => b.id === id ? { ...b, x: pos.x, y: pos.y } : b));
   }, []);
 
   const batchUpdatePositions = useCallback((updates: { id: string; x: number; y: number }[]) => {
     if (!updates.length) return;
+    editedBeforeCloudRef.current = true;
     const map = new Map(updates.map(u => [u.id, u]));
     setBubbles(prev => prev.map(b => {
       const u = map.get(b.id);
@@ -349,12 +375,19 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
       input.onchange = async () => {
         const file = input.files?.[0];
         if (!file) return;
-        const text     = await file.text();
+        let text: string;
+        try {
+          text = await file.text();
+        } catch {
+          Alert.alert('Import failed', 'Could not read the selected file.');
+          return;
+        }
         const imported = parseBubbleJson(text);
         if (!imported) { Alert.alert('Invalid file', 'Not a valid Mind Canvas export.'); return; }
         Alert.alert('Import map', `Replace the current map with ${imported.length} bubbles?`, [
           { text: 'Cancel', style: 'cancel' },
           { text: 'Replace', style: 'destructive', onPress: () => {
+            editedBeforeCloudRef.current = true;
             setBubbles(imported); setFocusedId(null); setEditSelection(null); setEditMode(false);
           }},
         ]);

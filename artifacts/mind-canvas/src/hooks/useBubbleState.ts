@@ -87,6 +87,15 @@ export function useBubbleState(initialBubbles: BubbleData[]): BubbleStateResult 
   // Mirrors the mobile cloudSyncedRef pattern in BubbleContext.tsx.
   const cloudSyncedRef = useRef(false);
 
+  // Always-current snapshot of bubbles for async callbacks.
+  const bubblesRef = useRef(bubbles);
+  bubblesRef.current = bubbles;
+
+  // Set to true by any user mutation that fires before the cloud bootstrap
+  // GET resolves. When set we keep the user's local state instead of
+  // overwriting it with the cloud response.
+  const editedBeforeCloudRef = useRef(false);
+
   const byId = useMemo(
     () => Object.fromEntries(bubbles.map(b => [b.id, b])),
     [bubbles],
@@ -96,6 +105,10 @@ export function useBubbleState(initialBubbles: BubbleData[]): BubbleStateResult 
   useEffect(() => {
     fetchFromCloud()
       .then(cloudBubbles => {
+        // If the user already made edits during the fetch window their data is
+        // more recent — keep it and let the save effect push it to cloud once
+        // the gate opens in .finally() below.
+        if (editedBeforeCloudRef.current) return;
         if (cloudBubbles) setBubbles(cloudBubbles);
       })
       .finally(() => {
@@ -122,6 +135,7 @@ export function useBubbleState(initialBubbles: BubbleData[]): BubbleStateResult 
   // useCallback dependency on [bubbles, byId] ensures the closure is never stale.
   const addBubble = useCallback(
     (label: string, parentId: string | null, opts?: AddBubbleOpts) => {
+      editedBeforeCloudRef.current = true;
       const id = `n${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
 
       if (!parentId) {
@@ -206,12 +220,14 @@ export function useBubbleState(initialBubbles: BubbleData[]): BubbleStateResult 
   // for clearing any UI state (focusedId, editingId) that pointed at a deleted
   // bubble — that keeps UI concerns out of this hook.
   const deleteBubblesById = useCallback((doomed: Set<string>) => {
+    editedBeforeCloudRef.current = true;
     setBubbles(prev => prev.filter(b => !doomed.has(b.id)));
   }, []);
 
   // ── renameBubble ─────────────────────────────────────────────────────────
   // Mirrors handleEditSave and the label-update path of saveQuickCreate.
   const renameBubble = useCallback((id: string, newLabel: string) => {
+    editedBeforeCloudRef.current = true;
     const trimmed = newLabel.trim();
     setBubbles(prev =>
       prev.map(b => (b.id === id ? { ...b, label: trimmed || b.label } : b)),
