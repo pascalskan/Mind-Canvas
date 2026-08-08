@@ -7,7 +7,8 @@ import * as Sharing from 'expo-sharing';
 import { BubbleData, MAX_DEPTH } from '@/lib/bubbleTypes';
 import {
   buildInitialBubbles, ringRadius, sizeForDepth, ROOT_COLORS, PILLAR_COLORS,
-  resolveCollisions,
+  resolveCollisions, relativeLayer,
+  LAYER_SIZES_OVERVIEW, LAYER_SIZES_FOCUSED,
 } from '@/lib/bubbleLayout';
 import { loadBubbles, parseBubbleJson, saveBubbles, fetchFromCloud, pushToCloud } from '@/lib/persistence';
 
@@ -131,8 +132,23 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
 
         const depth    = parent.depth + 1;
         const siblings = prev.filter(b => b.parentId === parentId);
-        const pr = sizeForDepth(parent.depth) / 2;
-        const cr = sizeForDepth(depth) / 2;
+
+        // Use display-space radii for ring placement so children visually
+        // cluster at the parent's rendered edge rather than the BASE_SIZE edge.
+        // This fixes grandchild pips (layer-2, display radius 9 wu) being
+        // placed far from their parent instead of touching its circumference.
+        const fid   = focusedIdRef.current;
+        const sizes = fid ? LAYER_SIZES_FOCUSED : LAYER_SIZES_OVERVIEW;
+        const parentLayer = fid
+          ? relativeLayer(parent.id, fid, byIdLocal)
+          : parent.depth <= 2 ? parent.depth : -1;
+        const childLayer = parentLayer >= 0 ? parentLayer + 1 : -1;
+        const pr = (parentLayer >= 0 && parentLayer <= 2)
+          ? sizes[parentLayer] / 2
+          : sizeForDepth(parent.depth) / 2;
+        const cr = (childLayer >= 0 && childLayer <= 2)
+          ? sizes[childLayer] / 2
+          : sizeForDepth(depth) / 2;
         const R  = ringRadius(pr, cr, siblings.length + 1);
 
         let angle: number;

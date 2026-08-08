@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated, Pressable, ScrollView, StyleSheet, Text, TextInput,
   TouchableOpacity, View, Platform,
@@ -22,10 +22,18 @@ export default function AddBubblePanel({ onClose, initialParentId }: Props) {
   const { bubbles, byId, addBubble, focusedId } = useBubbles();
   const insets = useSafeAreaInsets();
 
-  // Resolve initial parent: prefer initialParentId, then focusedId, then null
-  const resolvedInitialParent = initialParentId ?? focusedId ?? null;
+  // ── Drill-down state ────────────────────────────────────────────────────────
+  // viewingParentId: whose children we're currently browsing (null = root level)
+  const [viewingParentId, setViewingParentId] = useState<string | null>(() => {
+    if (initialParentId && byId[initialParentId]) {
+      // Start at the level that contains the initial parent so it's visible
+      return byId[initialParentId].parentId ?? null;
+    }
+    return null;
+  });
 
-  const [label,    setLabel]    = useState('');
+  // ── Selected parent + form state ────────────────────────────────────────────
+  const resolvedInitialParent = initialParentId ?? focusedId ?? null;
   const [parentId, setParentId] = useState<string | null>(resolvedInitialParent);
   const [color, setColor] = useState<string>(() => {
     const src = initialParentId ?? focusedId;
@@ -33,6 +41,7 @@ export default function AddBubblePanel({ onClose, initialParentId }: Props) {
     return PILLAR_COLORS[0];
   });
   const [scale, setScale] = useState(1.0);
+  const [label, setLabel] = useState('');
 
   const inputRef = useRef<TextInput>(null);
 
@@ -62,27 +71,49 @@ export default function AddBubblePanel({ onClose, initialParentId }: Props) {
     dismiss();
   };
 
-  // Build the full parent list: depth-first walk, excluding bubbles at MAX_DEPTH
-  // (they can't have children). Each entry carries a depth for indentation.
-  const parentOptions = React.useMemo(() => {
-    const result: { bubble: BubbleData; depth: number }[] = [];
-    function walk(parentId: string | null, depth: number) {
-      const children = bubbles
-        .filter(b => (b.parentId ?? null) === parentId)
-        .sort((a, b) => a.label.localeCompare(b.label));
-      for (const b of children) {
-        result.push({ bubble: b, depth });
-        if (b.depth < MAX_DEPTH) walk(b.id, depth + 1);
-      }
-    }
-    walk(null, 0);
-    return result.filter(({ bubble }) => bubble.depth < MAX_DEPTH);
-  }, [bubbles]);
+  // ── Current level bubbles ───────────────────────────────────────────────────
+  const currentLevelBubbles = useMemo(() =>
+    bubbles
+      .filter(b => (b.parentId ?? null) === viewingParentId && b.depth < MAX_DEPTH)
+      .sort((a, b) => a.label.localeCompare(b.label)),
+    [bubbles, viewingParentId],
+  );
 
-  const initialParent = initialParentId ? byId[initialParentId] : null;
-  const showSpecial   = initialParent && initialParent.depth > 0;
+  const viewingBubble = viewingParentId ? byId[viewingParentId] : null;
+  const canGoBack     = viewingParentId !== null;
+
+  function handleBack() {
+    // Go up one level: show the parent of the bubble we were browsing
+    setViewingParentId(viewingBubble?.parentId ?? null);
+  }
+
+  function handleChipPress(b: BubbleData) {
+    if (parentId === b.id) {
+      setParentId(null); // deselect → root
+    } else {
+      setParentId(b.id);
+      setColor(b.color);
+      Haptics.selectionAsync();
+    }
+  }
+
+  function handleChipLongPress(b: BubbleData) {
+    const hasChildren = bubbles.some(ch => ch.parentId === b.id && ch.depth < MAX_DEPTH);
+    if (hasChildren) {
+      setViewingParentId(b.id);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    } else {
+      // No children to explore — give feedback
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+    }
+  }
 
   const bottomPad = Platform.OS === 'web' ? 34 : insets.bottom;
+  const titleLabel = parent
+    ? `Add child to "${parent.label}"`
+    : viewingBubble
+      ? `Inside "${viewingBubble.label}"`
+      : 'New bubble';
 
   return (
     <>
@@ -98,9 +129,7 @@ export default function AddBubblePanel({ onClose, initialParentId }: Props) {
         {/* Handle bar */}
         <View style={styles.handle} />
 
-        <Text style={styles.title}>
-          {showSpecial ? `Add child to "${initialParent?.label}"` : 'New bubble'}
-        </Text>
+        <Text style={styles.title}>{titleLabel}</Text>
 
         {/* Label input */}
         <TextInput
@@ -115,32 +144,58 @@ export default function AddBubblePanel({ onClose, initialParentId }: Props) {
           maxLength={60}
         />
 
-        {/* Parent selector */}
-        <Text style={styles.sectionLabel}>Add to</Text>
+        {/* Parent selector ── drill-down */}
+        <View style={styles.sectionRow}>
+          <Text style={styles.sectionLabel}>Add to</Text>
+          <Text style={styles.hint}>Tap to select · Hold to explore</Text>
+        </View>
+
+        {/* Back button when drilled in */}
+        {canGoBack && (
+          <TouchableOpacity style={styles.backRow} onPress={handleBack} activeOpacity={0.7}>
+            <Text style={styles.backArrow}>‹</Text>
+            <Text style={styles.backLabel}>
+              {viewingBubble?.parentId
+                ? byId[viewingBubble.parentId]?.label ?? 'Back'
+                : 'Root level'}
+            </Text>
+          </TouchableOpacity>
+        )}
+
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
           style={styles.parentRow}
           contentContainerStyle={styles.parentRowContent}
         >
-          <ParentChip
-            label="Root level"
-            color="#aaa"
-            selected={parentId === null}
-            onPress={() => { setParentId(null); setColor(PILLAR_COLORS[0]); }}
-          />
-
-          {/* Full tree — every bubble that can accept children */}
-          {parentOptions.map(({ bubble: b, depth }) => (
+          {/* "Root level" chip only visible at root level */}
+          {!canGoBack && (
             <ParentChip
-              key={b.id}
-              label={b.label}
-              color={b.color}
-              depth={depth}
-              selected={parentId === b.id}
-              onPress={() => { setParentId(b.id); setColor(b.color); Haptics.selectionAsync(); }}
+              label="Root level"
+              color="#aaa"
+              selected={parentId === null}
+              hasChildren={false}
+              onPress={() => { setParentId(null); setColor(PILLAR_COLORS[0]); }}
+              onLongPress={() => {}}
             />
-          ))}
+          )}
+
+          {currentLevelBubbles.map(b => {
+            const hasChildren = bubbles.some(
+              ch => ch.parentId === b.id && ch.depth < MAX_DEPTH,
+            );
+            return (
+              <ParentChip
+                key={b.id}
+                label={b.label}
+                color={b.color}
+                selected={parentId === b.id}
+                hasChildren={hasChildren}
+                onPress={() => handleChipPress(b)}
+                onLongPress={() => handleChipLongPress(b)}
+              />
+            );
+          })}
         </ScrollView>
 
         {atMax && (
@@ -211,22 +266,30 @@ export default function AddBubblePanel({ onClose, initialParentId }: Props) {
 }
 
 function ParentChip({
-  label, color, depth = 0, selected, onPress,
-}: { label: string; color: string; depth?: number; selected: boolean; onPress: () => void }) {
-  const prefix = depth > 0 ? '›'.repeat(depth) + ' ' : '';
+  label, color, selected, hasChildren, onPress, onLongPress,
+}: {
+  label: string; color: string; selected: boolean;
+  hasChildren: boolean; onPress: () => void; onLongPress: () => void;
+}) {
   return (
     <TouchableOpacity
       style={[
         styles.parentChip,
-        { borderColor: color, backgroundColor: selected ? color : 'transparent',
-          marginLeft: depth * 4 },
+        { borderColor: color, backgroundColor: selected ? color : 'transparent' },
       ]}
       onPress={onPress}
+      onLongPress={onLongPress}
+      delayLongPress={400}
       activeOpacity={0.75}
     >
       <Text style={[styles.parentChipText, { color: selected ? '#fff' : color }]}>
-        {prefix}{label}
+        {label}
       </Text>
+      {hasChildren && (
+        <Text style={[styles.drillIcon, { color: selected ? 'rgba(255,255,255,0.7)' : color }]}>
+          ›
+        </Text>
+      )}
     </TouchableOpacity>
   );
 }
@@ -253,17 +316,37 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1, borderBottomColor: '#e5e7eb',
     paddingVertical: 8, marginBottom: 16,
   },
+  sectionRow: {
+    flexDirection: 'row', alignItems: 'center',
+    justifyContent: 'space-between', marginBottom: 8,
+  },
   sectionLabel: {
     fontSize: 11, fontFamily: 'Inter_500Medium',
-    color: '#9ca3af', letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: 8,
+    color: '#9ca3af', letterSpacing: 1.2, textTransform: 'uppercase',
+  },
+  hint: {
+    fontSize: 10, fontFamily: 'Inter_400Regular',
+    color: '#c4c9d4', fontStyle: 'italic',
+  },
+  backRow: {
+    flexDirection: 'row', alignItems: 'center',
+    marginBottom: 8, paddingVertical: 4,
+  },
+  backArrow: {
+    fontSize: 22, color: '#9ca3af', lineHeight: 24, marginRight: 4,
+  },
+  backLabel: {
+    fontSize: 13, fontFamily: 'Inter_400Regular', color: '#9ca3af',
   },
   parentRow:        { maxHeight: 52, marginBottom: 12 },
   parentRowContent: { gap: 8, paddingRight: 4 },
   parentChip: {
+    flexDirection: 'row', alignItems: 'center',
     paddingHorizontal: 14, height: 36, borderRadius: 18,
-    borderWidth: 1.5, justifyContent: 'center',
+    borderWidth: 1.5, gap: 4,
   },
   parentChipText: { fontSize: 14, fontFamily: 'Inter_400Regular' },
+  drillIcon:      { fontSize: 16, lineHeight: 20 },
   atMaxWarning:   { fontSize: 12, color: '#ef4444', marginBottom: 8 },
   colorRow:       { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 16 },
   swatch: {
