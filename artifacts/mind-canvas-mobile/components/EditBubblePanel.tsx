@@ -79,12 +79,15 @@ export default function EditBubblePanel({ bubbleId, focusLabel }: Props) {
       {/* Handle */}
       <View style={styles.handle} />
 
-      {/* Color swatch + bubble name */}
+      {/* Color swatch + bubble name + delete */}
       <View style={styles.header}>
         <View style={[styles.colorDot, { backgroundColor: color }]} />
         <Text style={styles.depth}>
           depth {bubble.depth} {bubble.parentId ? '' : '· root'}
         </Text>
+        <TouchableOpacity style={styles.deleteBtn} onPress={handleDelete}>
+          <Text style={styles.deleteText}>Delete</Text>
+        </TouchableOpacity>
       </View>
 
       {/* Rename */}
@@ -131,10 +134,6 @@ export default function EditBubblePanel({ bubbleId, focusLabel }: Props) {
         ))}
       </View>
 
-      {/* Delete */}
-      <TouchableOpacity style={styles.deleteBtn} onPress={handleDelete}>
-        <Text style={styles.deleteText}>Delete bubble</Text>
-      </TouchableOpacity>
     </Animated.View>
   );
 }
@@ -161,6 +160,7 @@ const styles = StyleSheet.create({
   },
   header: {
     flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12,
+    justifyContent: 'space-between',
   },
   colorDot: {
     width: 16, height: 16, borderRadius: 8,
@@ -197,12 +197,13 @@ const styles = StyleSheet.create({
   sizeText: { fontSize: 13, fontFamily: 'Inter_400Regular', color: '#666' },
   sizeTextSel: { color: '#fff' },
   deleteBtn: {
-    alignSelf: 'center',
-    paddingHorizontal: 24, height: 44,
-    justifyContent: 'center',
+    marginLeft: 'auto',
+    paddingHorizontal: 10, paddingVertical: 4,
+    borderRadius: 8,
+    justifyContent: 'center', alignItems: 'center',
   },
   deleteText: {
-    fontSize: 14, fontFamily: 'Inter_400Regular',
+    fontSize: 13, fontFamily: 'Inter_400Regular',
     color: '#ef4444',
   },
 });
