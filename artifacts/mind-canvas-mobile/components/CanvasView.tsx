@@ -15,10 +15,11 @@ const { width: SW, height: SH } = Dimensions.get('window');
 const INIT_SCALE   = 0.28;
 const MIN_SCALE    = 0.06;
 const MAX_SCALE    = 5.0;
-const TAP_DIST     = 10;
-const TAP_MS       = 280;
-const DRAG_THRESH  = 6;
+const TAP_DIST      = 10;
+const TAP_MS        = 280;
+const DRAG_THRESH   = 6;
 const LONG_PRESS_MS = 500;
+const DOUBLE_TAP_MS = 320;
 
 interface Camera { x: number; y: number; scale: number }
 
@@ -50,9 +51,11 @@ const PHYS_GAP = 12;       // min gap between bubble edges, world units
 interface Props {
   /** Called when the user long-presses a bubble to add a child to it. */
   onLongPressAddChild?: (parentId: string) => void;
+  /** Called when the user double-taps a bubble to rename it. */
+  onDoubleTapBubble?: (id: string) => void;
 }
 
-export default function CanvasView({ onLongPressAddChild }: Props) {
+export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: Props) {
   const {
     bubbles, focusedId, editMode, editSelection, byId,
     setFocusedId, setEditSelection, updateBubblePosition,
@@ -102,7 +105,11 @@ export default function CanvasView({ onLongPressAddChild }: Props) {
   const batchUpdateRef = useRef(batchUpdatePositions); batchUpdateRef.current = batchUpdatePositions;
   const setFocusedRef = useRef(setFocusedId); setFocusedRef.current = setFocusedId;
   const setEditSelRef = useRef(setEditSelection); setEditSelRef.current = setEditSelection;
-  const onLongPressRef = useRef(onLongPressAddChild); onLongPressRef.current = onLongPressAddChild;
+  const onLongPressRef    = useRef(onLongPressAddChild); onLongPressRef.current    = onLongPressAddChild;
+  const onDoubleTapRef    = useRef(onDoubleTapBubble);  onDoubleTapRef.current    = onDoubleTapBubble;
+
+  // Tracks the last bubble tap for double-tap detection.
+  const lastTapRef = useRef<{ id: string | null; time: number }>({ id: null, time: 0 });
 
   // ── Physics collision resolution ─────────────────────────────────────────────
   // Working positions during animation; seeded once when a single bubble is
@@ -494,8 +501,19 @@ export default function CanvasView({ onLongPressAddChild }: Props) {
 
         } else if (dist < TAP_DIST && dur < TAP_MS && !pinchStart.current) {
           if (draggingIdRef.current) {
-            handleBubbleTap(draggingIdRef.current);
+            const tappedId = draggingIdRef.current;
+            const now      = Date.now();
+            const last     = lastTapRef.current;
+            if (last.id === tappedId && now - last.time < DOUBLE_TAP_MS) {
+              // Double-tap detected — reset so a third tap starts fresh.
+              lastTapRef.current = { id: null, time: 0 };
+              handleBubbleDoubleTap(tappedId);
+            } else {
+              lastTapRef.current = { id: tappedId, time: now };
+              handleBubbleTap(tappedId);
+            }
           } else {
+            lastTapRef.current = { id: null, time: 0 };
             handleBackgroundTap();
           }
         }
@@ -519,6 +537,11 @@ export default function CanvasView({ onLongPressAddChild }: Props) {
       },
     }),
   ).current;
+
+  function handleBubbleDoubleTap(id: string) {
+    Haptics.selectionAsync();
+    onDoubleTapRef.current?.(id);
+  }
 
   function handleBubbleTap(id: string) {
     const em  = editModeRef.current;

@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Platform, Pressable, StyleSheet, Text, TouchableOpacity, View,
 } from 'react-native';
@@ -20,6 +20,20 @@ export default function MainScreen() {
   const insets = useSafeAreaInsets();
   const [showAdd, setShowAdd]           = useState(false);
   const [addParentId, setAddParentId]   = useState<string | null>(null);
+  const [focusEditLabel, setFocusEditLabel] = useState(false);
+  // Tracks whether the current focusEditLabel=true was consumed at mount time,
+  // so a subsequent editSelection change (single-tap in edit mode) won't
+  // unexpectedly auto-focus the next panel.
+  const doubleTapPendingRef = useRef(false);
+
+  useEffect(() => {
+    if (doubleTapPendingRef.current) {
+      // The panel just mounted with autoFocus — clear the pending flag and
+      // reset the state flag so future single-tap panels open without focus.
+      doubleTapPendingRef.current = false;
+      setFocusEditLabel(false);
+    }
+  }, [editSelection]);
 
   const isWeb       = Platform.OS === 'web';
   const topInset    = isWeb ? 67 : insets.top;
@@ -43,10 +57,10 @@ export default function MainScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
   };
   const cancelEdit = () => {
-    setEditMode(false); setEditSelection(null); Haptics.selectionAsync();
+    setEditMode(false); setEditSelection(null); setFocusEditLabel(false); Haptics.selectionAsync();
   };
   const doneEdit = () => {
-    setEditMode(false); setEditSelection(null);
+    setEditMode(false); setEditSelection(null); setFocusEditLabel(false);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   };
 
@@ -57,6 +71,13 @@ export default function MainScreen() {
     setShowAdd(true);
   }, []);
 
+  const handleDoubleTapBubble = useCallback((id: string) => {
+    doubleTapPendingRef.current = true;
+    setEditMode(true);
+    setEditSelection(id);
+    setFocusEditLabel(true);
+  }, [setEditMode, setEditSelection]);
+
   const closeAddPanel = useCallback(() => {
     setShowAdd(false);
     setAddParentId(null);
@@ -65,7 +86,10 @@ export default function MainScreen() {
   return (
     <View style={StyleSheet.absoluteFill}>
       {/* Infinite canvas */}
-      <CanvasView onLongPressAddChild={handleLongPressAddChild} />
+      <CanvasView
+        onLongPressAddChild={handleLongPressAddChild}
+        onDoubleTapBubble={handleDoubleTapBubble}
+      />
 
       {/* ── Breadcrumb bar ──────────────────────────────────────────────── */}
       {breadcrumb.length > 0 && (
@@ -155,7 +179,7 @@ export default function MainScreen() {
 
       {/* ── Edit panel ──────────────────────────────────────────────────── */}
       {editMode && editSelection && (
-        <EditBubblePanel bubbleId={editSelection} />
+        <EditBubblePanel bubbleId={editSelection} focusLabel={focusEditLabel} />
       )}
 
       {/* ── Add panel ───────────────────────────────────────────────────── */}

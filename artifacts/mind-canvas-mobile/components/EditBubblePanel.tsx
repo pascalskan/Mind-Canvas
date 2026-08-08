@@ -10,9 +10,11 @@ import { PILLAR_COLORS, SCALE_OPTIONS } from '@/lib/bubbleLayout';
 
 interface Props {
   bubbleId: string;
+  /** When true the label TextInput is auto-focused (e.g. opened via double-tap). */
+  focusLabel?: boolean;
 }
 
-export default function EditBubblePanel({ bubbleId }: Props) {
+export default function EditBubblePanel({ bubbleId, focusLabel }: Props) {
   const {
     byId, renameBubble, recolorBubble, resizeBubble, deleteBubble,
     setEditSelection, setEditMode, focusedId, setFocusedId,
@@ -96,6 +98,8 @@ export default function EditBubblePanel({ bubbleId }: Props) {
         maxLength={60}
         placeholder="Label…"
         placeholderTextColor="#bbb"
+        autoFocus={!!focusLabel}
+        selectTextOnFocus={!!focusLabel}
       />
 
       {/* Color picker */}
