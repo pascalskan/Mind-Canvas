@@ -547,13 +547,20 @@ function fitLayout(
 
 // ─── Glass bubble ─────────────────────────────────────────────────────────────
 
-function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange, onEditSave, onEditCancel }: {
+function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange, onEditSave, onEditCancel, onLabelClick }: {
   size: number; color: string; label: string;
   isEditing?: boolean; editValue?: string;
   onEditChange?: (v: string) => void; onEditSave?: () => void; onEditCancel?: () => void;
+  onLabelClick?: () => void;
 }) {
   const uid = (color + Math.round(size)).replace(/[^a-zA-Z0-9]/g, '');
   const fontSize = Math.max(size * 0.135, 8.5);
+  // A rename must both START and END on the label. The second click of the
+  // locking double-click presses down on the bubble (the label is inert until
+  // the bubble is locked) and only lands on the label once the lock re-renders,
+  // so requiring the press to originate here is what separates "lock" from
+  // "rename" — a time window cannot tell those two gestures apart.
+  const labelArmed = useRef(false);
   return (
     <div style={{ width: size, height: size }} className="relative rounded-full flex items-center justify-center">
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="absolute inset-0 pointer-events-none overflow-visible">
@@ -593,8 +600,18 @@ function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange
           className="relative z-20 bg-transparent text-center font-sans font-light text-gray-700 tracking-wide outline-none cursor-text select-text w-4/5"
           style={{ fontSize, lineHeight: 1.15 }}/>
       ) : (
-        <div className="relative z-10 text-gray-700 font-sans font-light tracking-wide pointer-events-none select-none text-center break-words"
-          style={{ fontSize, lineHeight: 1.15, maxWidth: '84%' }}>
+        <div className="relative z-10 text-gray-700 font-sans font-light tracking-wide select-none text-center break-words"
+          style={{ pointerEvents: onLabelClick ? 'auto' : 'none', fontSize, lineHeight: 1.15, maxWidth: '84%' }}
+          onPointerDown={onLabelClick
+            ? e => { e.stopPropagation(); labelArmed.current = true; }
+            : undefined}
+          // The bubble's pointer-up handler must not run for a press that began
+          // on the label: it never captured this pointer, and releasing an
+          // uncaptured pointer throws.
+          onPointerUp={onLabelClick ? e => e.stopPropagation() : undefined}
+          onClick={onLabelClick
+            ? () => { if (labelArmed.current) { labelArmed.current = false; onLabelClick(); } }
+            : undefined}>
           {label}
         </div>
       )}
@@ -677,6 +694,9 @@ function CoordinateField() {
     </svg>
   );
 }
+
+// Ring drawn around the bubble currently locked in edit mode.
+const LOCK_RING = 'hsl(260,55%,58%)';
 
 const PILLAR_COLORS = [
   'hsl(250,60%,58%)', 'hsl(340,64%,60%)', 'hsl(170,48%,46%)',
@@ -1025,14 +1045,19 @@ export default function MindCanvas() {
   // ── Edit mode ────────────────────────────────────────────────────────────
 
   const enterEditMode = useCallback(() => {
+    const currentFocus = focusedIdRef.current;
     setPreEditBubbles(bubblesRef.current.map(b => ({ ...b })));
     setEditMode(true);
-    setFocusedId(null);
     setEditingId(null);
     setEditSelection(null);
     setShowColorPicker(false);
-    fitAll();
-  }, [fitAll]);
+    if (currentFocus) {
+      fitLayout(layoutView(bubblesRef.current, currentFocus, null),
+        cameraX, cameraY, cameraScale, { maxScale: 1.6, padding: 110 });
+    } else {
+      fitAll();
+    }
+  }, [cameraX, cameraY, cameraScale, fitAll]);
 
   const saveEditMode = useCallback(() => {
     setPreEditBubbles(null);
@@ -1129,6 +1154,13 @@ export default function MindCanvas() {
     mx: 0, my: 0, bx: 0, by: 0, dist: 0, subtreeOrigins: {}, rx: 0, ry: 0, band: null,
   });
   const lastClick  = useRef<Record<string, number>>({});
+  const editClick  = useRef<Record<string, number>>({});
+  // When a bubble actually became locked. Locking makes the label interactive,
+  // so the very next click of the same double-click gesture can land on it and
+  // would otherwise open rename. Requiring the press to start on the label is
+  // not enough on its own, because the lock can happen on the FIRST click when
+  // an earlier click left the double-click window still open.
+  const lockedAt   = useRef<{ id: string; t: number }>({ id: '', t: 0 });
 
   const onBubbleDown = (e: React.PointerEvent, id: string) => {
     if (editingId === id) return;
@@ -1201,16 +1233,25 @@ export default function MindCanvas() {
 
   const onBubbleUp = (e: React.PointerEvent, id: string) => {
     e.stopPropagation();
-    e.currentTarget.releasePointerCapture(e.pointerId);
+    // Only release what we actually captured — releasing an uncaptured pointer
+    // throws, which would abort this handler mid-way.
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
     const isClick = dragOrigin.current.dist < 10;
 
     if (isClick) {
       if (editModeRef.current) {
+        const now = Date.now();
+        const wasRecent = now - (editClick.current[id] ?? 0) < 320;
+        editClick.current[id] = now;
         const b = bubblesRef.current.find(x => x.id === id);
-        if (b) {
+        if (b && wasRecent) {
           setEditSelection(id);
-          setEditingId(id);
           setEditValue(b.label);
+          lockedAt.current = { id, t: now };
+          // End the gesture so a following click starts a fresh one.
+          editClick.current[id] = 0;
         }
       } else {
         const now = Date.now();
@@ -1362,7 +1403,7 @@ export default function MindCanvas() {
         <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
           className="absolute top-5 left-1/2 -translate-x-1/2 z-50 pointer-events-none select-none"
           style={{ background: 'rgba(255,255,255,.84)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 20, padding: '6px 18px', boxShadow: '0 2px 16px rgba(0,0,0,.06),inset 0 0 0 1px rgba(130,110,180,.25)', fontSize: 12, color: 'hsl(260,40%,50%)', letterSpacing: '.04em', fontWeight: 300 }}>
-          Edit mode · select a bubble to lock it · click its name to rename · × deletes
+          Edit mode · double-click a bubble to lock it · click its name to rename · × deletes
         </motion.div>
       )}
 
@@ -1440,7 +1481,30 @@ export default function MindCanvas() {
                   onEditChange={setEditValue}
                   onEditSave={() => handleEditSave(bubble.id)}
                   onEditCancel={() => setEditingId(null)}
+                  onLabelClick={editMode && isEditSelected && !visualOnly
+                    ? () => {
+                        // Ignore the click that completed the locking gesture.
+                        if (lockedAt.current.id === bubble.id
+                          && Date.now() - lockedAt.current.t < 350) return;
+                        setEditingId(bubble.id);
+                        setEditValue(bubble.label);
+                      }
+                    : undefined}
                 />
+              )}
+
+              {/* Lock indicator: a locked bubble must be unmistakable, since
+                  every edit action (rename, recolour, delete) applies to it. */}
+              {isEditSelected && (
+                <motion.div aria-hidden="true"
+                  initial={{ opacity: 0, scale: .94 }} animate={{ opacity: 1, scale: 1 }}
+                  className="absolute rounded-full pointer-events-none"
+                  style={{
+                    inset: -Math.max(6, size * .05),
+                    border: `2px dashed ${LOCK_RING}`,
+                    boxShadow: `0 0 0 3px rgba(130,110,180,.10)`,
+                    zIndex: 250,
+                  }} />
               )}
 
               {editMode && isEditSelected && bubble.depth === 0 && (
