@@ -1,2 +1,3 @@
 - [Mind Canvas bubble model](mind-canvas-model.md) — everything is a nested bubble (no text content); on-screen size/ring radius derive from relative layer, never stored coords; non-overlap solved per-frame.
 - [Canvas pointer gestures](canvas-pointer-gestures.md) — separate lock/rename/drag by pointer ownership not time windows; releasing an uncaptured pointer throws; demand raw DOM from testers.
+- [Mind Canvas RAF performance](mind-canvas-perf.md) — use per-bubble MotionValues updated in RAF, not setPositions state; skip MV updates while panning; memo CoordinateField.

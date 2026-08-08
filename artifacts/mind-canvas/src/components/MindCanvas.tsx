@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { motion, useMotionValue, animate, type MotionValue } from 'framer-motion';
+import React, { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
+import { motion, useMotionValue, animate, motionValue, type MotionValue } from 'framer-motion';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 // Everything on the canvas is a bubble. There is no "content" — a note, an item,
@@ -602,7 +602,8 @@ function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange
 // Inspired by the supplied drafting-grid reference, but made from live SVG so it
 // lives in the same infinite coordinate system as bubbles and can move with them.
 
-function CoordinateField() {
+// Memoized — takes no props and never needs to re-render.
+const CoordinateField = memo(function CoordinateField() {
   const worldSize = 7200;
   const half = worldSize / 2;
   const minor = 40;
@@ -672,7 +673,7 @@ function CoordinateField() {
       </circle>
     </svg>
   );
-}
+});
 
 // Ring drawn around the bubble currently locked in edit mode.
 const LOCK_RING = 'hsl(260,55%,58%)';
@@ -805,35 +806,16 @@ function panelTop(): number {
 
 function AddPanel({ bubbles, onAdd, onClose, initialParentPath = [], quickCreate, anchor, onQuickSave, onQuickCancel }: {
   bubbles: BubbleData[];
-  onAdd: (label: string, parentId: string | null) => void;
+  onAdd: (label: string, parentId: string | null, opts?: { color?: string; scale?: number }) => void;
   onClose: () => void;
   initialParentPath?: string[];
   quickCreate?: { id: string };
   anchor?: { x: number; y: number };
-  onQuickSave?: (id: string, label: string) => void;
+  onQuickSave?: (id: string, label: string, opts?: { color?: string; scale?: number }) => void;
   onQuickCancel?: () => void;
 }) {
   const [label, setLabel]           = useState('');
   const [parentPath, setParentPath] = useState<string[]>(initialParentPath);
-
-  // Compute the top offset ONCE at mount. On iOS, showing the keyboard shrinks
-  // window.innerHeight mid-interaction by ~200px, which shifts the panel up by
-  // that much on every re-render and causes every row tap to miss. Storing the
-  // value in a ref prevents any later movement once rows are visible.
-  const stableTop = useRef(panelTop());
-
-  // Selecting a parent reveals its children in a new section that may sit below
-  // the fold. Scroll by the MINIMUM needed ('nearest') rather than jumping to
-  // the bottom: every pixel of scroll slides the rows out from under the
-  // cursor, so a big jump makes the user's next click land on the wrong row.
-  // Instant, not smooth, so the list has settled before they can click again.
-  const levelsRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const box = levelsRef.current;
-    if (!box) return;
-    const sections = box.querySelectorAll('[data-level]');
-    sections[sections.length - 1]?.scrollIntoView({ block: 'nearest' });
-  }, [parentPath]);
 
   const byId  = useMemo(() => Object.fromEntries(bubbles.map(b => [b.id, b])), [bubbles]);
   const roots = bubbles.filter(b => b.depth === 0);
@@ -841,6 +823,36 @@ function AddPanel({ bubbles, onAdd, onClose, initialParentPath = [], quickCreate
   const parentId = parentPath.length ? parentPath[parentPath.length - 1] : null;
   const parent   = parentId ? byId[parentId] : null;
   const atMax    = !!parent && parent.depth >= MAX_DEPTH;
+
+  // Color defaults to parent's color (so children stay coherent) or a root color.
+  const defaultColor = parent?.color ?? (quickCreate
+    ? (byId[initialParentPath[initialParentPath.length - 1]]?.color ?? PILLAR_COLORS[0])
+    : PILLAR_COLORS[0]);
+  const [newColor, setNewColor] = useState<string>(defaultColor);
+  const [newScale, setNewScale] = useState<number>(1.0);
+
+  // When the user picks a different parent, reset color to match it.
+  useEffect(() => {
+    const pid = parentPath[parentPath.length - 1];
+    const p = pid ? byId[pid] : null;
+    if (p) setNewColor(p.color);
+    else if (!parentPath.length) setNewColor(PILLAR_COLORS[0]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parentPath]);
+
+  // Compute the top offset ONCE at mount. On iOS, showing the keyboard shrinks
+  // window.innerHeight mid-interaction by ~200px, which shifts the panel up by
+  // that much on every re-render and causes every row tap to miss.
+  const stableTop = useRef(panelTop());
+
+  // Scroll newly-revealed child levels into view.
+  const levelsRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const box = levelsRef.current;
+    if (!box) return;
+    const sections = box.querySelectorAll('[data-level]');
+    sections[sections.length - 1]?.scrollIntoView({ block: 'nearest' });
+  }, [parentPath]);
 
   // Build one selector row per level of the current path that still has children.
   const levels = useMemo(() => {
@@ -859,15 +871,20 @@ function AddPanel({ bubbles, onAdd, onClose, initialParentPath = [], quickCreate
     setParentPath(p => (id === null ? p.slice(0, index) : [...p.slice(0, index), id]));
   };
 
+  const opts = () => ({
+    color: newColor,
+    scale: newScale !== 1.0 ? newScale : undefined,
+  });
+
   const submit = () => {
     const t = label.trim();
     if (!t || atMax) return;
     if (quickCreate) {
-      onQuickSave?.(quickCreate.id, t);
+      onQuickSave?.(quickCreate.id, t, opts());
       onClose();
       return;
     }
-    onAdd(t, parentId);
+    onAdd(t, parentId, opts());
     onClose();
   };
 
@@ -876,12 +893,10 @@ function AddPanel({ bubbles, onAdd, onClose, initialParentPath = [], quickCreate
     onClose();
   };
 
-  // A real <button> with a generous py so the touch target reaches 44px without
-  // shifting the visible layout. Negative margin cancels out the extra padding
-  // so rows don't add gaps between themselves.
+  // A real <button> with a generous py so the touch target reaches 44px.
   const Row = ({ text, selected, onSelect, dim }: { text: string; selected: boolean; onSelect: () => void; dim?: boolean }) => (
     <button type="button" onClick={onSelect}
-      className="w-full flex items-center gap-3 cursor-pointer py-3 -my-0 text-left">
+      className="w-full flex items-center gap-3 cursor-pointer py-3 text-left">
       <div className="w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-all"
         style={{ borderColor: selected ? '#9ca3af' : '#d1d5db', background: selected ? '#9ca3af' : 'transparent' }}>
         {selected && <div className="w-2 h-2 rounded-full bg-white"/>}
@@ -913,6 +928,7 @@ function AddPanel({ bubbles, onAdd, onClose, initialParentPath = [], quickCreate
           onKeyDown={e => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') onClose(); }}
           className="w-full bg-transparent border-b border-gray-200 text-gray-700 font-light text-base outline-none py-2 mb-4 placeholder-gray-300"/>
 
+        {/* Parent selector (not shown in quickCreate mode — parent is already fixed) */}
         {!quickCreate && <div ref={levelsRef} className="overflow-y-auto pr-1 -mr-1"
           style={{ maxHeight: LIST_MAX_H }}>
           <p className="text-xs text-gray-400 font-light mb-2">Add to</p>
@@ -928,7 +944,7 @@ function AddPanel({ bubbles, onAdd, onClose, initialParentPath = [], quickCreate
               style={{ paddingLeft: 10, marginLeft: Math.min(i * 8, 40) }}>
               <p className="text-xs text-gray-300 font-light mb-1.5">inside {lvl.parent.label}</p>
               <div className="flex flex-col gap-1.5">
-                <Row dim text={`Directly here`} selected={parentPath.length === i + 1} onSelect={() => selectAt(i + 1, null)}/>
+                <Row dim text="Directly here" selected={parentPath.length === i + 1} onSelect={() => selectAt(i + 1, null)}/>
                 {lvl.options.map(o => (
                   <Row key={o.id} text={o.label} selected={parentPath[i + 1] === o.id} onSelect={() => selectAt(i + 1, o.id)}/>
                 ))}
@@ -937,10 +953,40 @@ function AddPanel({ bubbles, onAdd, onClose, initialParentPath = [], quickCreate
           ))}
         </div>}
 
+        {/* ── Color + size ──────────────────────────────────────────────── */}
+        {!atMax && (
+          <div className="mt-3 pt-3 border-t border-gray-100">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs uppercase tracking-widest font-light text-gray-400">Color</p>
+              <div className="w-5 h-5 rounded-full border-2 border-white shadow-sm flex-shrink-0"
+                style={{ background: newColor, boxShadow: '0 0 0 2px rgba(90,90,100,.25)' }}/>
+            </div>
+            <div className="grid grid-cols-4 gap-2 mb-3">
+              {PILLAR_COLORS.map(c => (
+                <button key={c} type="button" aria-label={`Color ${c}`}
+                  onClick={() => setNewColor(c)}
+                  className="rounded-full active:scale-95 transition-transform"
+                  style={{ width: 44, height: 44, background: c,
+                    boxShadow: newColor === c ? '0 0 0 3px #fff,0 0 0 5px rgba(90,90,100,.4)' : 'inset 0 1px 2px rgba(255,255,255,.5)' }} />
+              ))}
+            </div>
+
+            <p className="text-xs uppercase tracking-widest font-light text-gray-400 mb-2">Size</p>
+            <select value={String(newScale)} onChange={e => setNewScale(Number(e.target.value))}
+              className="w-full bg-transparent text-base font-light text-gray-600 outline-none cursor-pointer"
+              style={{ border: '1px solid #e5e7eb', borderRadius: 9, padding: '10px 8px', minHeight: 44 }}>
+              {SCALE_OPTIONS.map(o => (
+                <option key={o} value={String(o)}>{Math.round(o * 100)}%</option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* Status line */}
         <div className="mt-3 mb-3">
           {quickCreate ? (
             <p className="text-xs text-gray-300 font-light">
-              → child of <span className="text-gray-500">{parent?.label}</span> · level {(parent?.depth ?? 0) + 1}
+              → child of <span className="text-gray-500">{parent?.label ?? byId[initialParentPath[initialParentPath.length-1]]?.label}</span>
             </p>
           ) : atMax ? (
             <p className="text-xs font-light" style={{ color: 'hsl(0,45%,58%)' }}>
@@ -960,7 +1006,7 @@ function AddPanel({ bubbles, onAdd, onClose, initialParentPath = [], quickCreate
           <button onClick={cancel} className="text-sm font-light text-gray-400 active:text-gray-600 transition-colors px-4 py-3">Cancel</button>
           <button onClick={submit} disabled={!label.trim() || atMax}
             className="text-sm font-light text-white px-5 py-3 rounded-full transition-opacity disabled:opacity-30"
-            style={{ background: 'rgba(100,100,120,.7)' }}>
+            style={{ background: newColor }}>
             Add
           </button>
         </div>
@@ -988,7 +1034,6 @@ interface DragOrigin {
 export default function MindCanvas() {
   const [bubbles,        setBubbles]        = useState<BubbleData[]>(INITIAL_BUBBLES);
   const [focusedId,      setFocusedId]      = useState<string | null>(null);
-  const [positions,      setPositions]      = useState<Record<string, { x: number; y: number }>>({});
   const [editingId,      setEditingId]      = useState<string | null>(null);
   const [editValue,      setEditValue]      = useState('');
   const [hoveredBubble,  setHoveredBubble]  = useState<string | null>(null);
@@ -1012,6 +1057,12 @@ export default function MindCanvas() {
   const sizeMap = useMemo(() => viewSizes(bubbles, focusedId).sizes, [bubbles, focusedId]);
 
   // ── Refs readable from the rAF loop ──────────────────────────────────────
+
+  // Per-bubble MotionValues updated directly in the RAF — Framer Motion writes
+  // the new transform straight to the DOM without going through React's
+  // reconciler. This eliminates full re-renders every 16 ms and is the main
+  // fix for mobile lag during panning and floating animation.
+  const bubbleMVs   = useRef<Map<string, { x: MotionValue<number>; y: MotionValue<number> }>>(new Map());
 
   const bubblesRef  = useRef<BubbleData[]>(INITIAL_BUBBLES);
   const positionsRef = useRef<Record<string, { x: number; y: number }>>({});
@@ -1044,12 +1095,36 @@ export default function MindCanvas() {
       resolveCollisions(list, map, pos, draggingRef.current, sizeOf, bandOf);
 
       positionsRef.current = pos;
-      setPositions(pos);
+
+      // Write positions directly into per-bubble MotionValues so Framer Motion
+      // updates the DOM transforms without going through React's reconciler.
+      // During a pan the camera MotionValue already redraws everything; skipping
+      // MV updates here prevents two competing transform writes per frame and
+      // keeps panning smooth on mobile.
+      if (!isPanning.current) {
+        for (const b of bubblesRef.current) {
+          const p = pos[b.id];
+          const mv = bubbleMVs.current.get(b.id);
+          if (p && mv) {
+            const half = sizeOf(b) / 2;
+            mv.x.set(p.x - half);
+            mv.y.set(p.y - half);
+          }
+        }
+      }
     };
 
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, []);
+
+  // Clean up stale MotionValues when bubbles are removed.
+  useEffect(() => {
+    const ids = new Set(bubbles.map(b => b.id));
+    for (const id of bubbleMVs.current.keys()) {
+      if (!ids.has(id)) bubbleMVs.current.delete(id);
+    }
+  }, [bubbles]);
 
   // ── Ancestors / descendants ──────────────────────────────────────────────
 
@@ -1359,8 +1434,10 @@ export default function MindCanvas() {
     setEditingId(null);
   };
 
-  const saveQuickCreate = (id: string, label: string) => {
-    setBubbles(prev => prev.map(b => b.id === id ? { ...b, label } : b));
+  const saveQuickCreate = (id: string, label: string, opts?: { color?: string; scale?: number }) => {
+    setBubbles(prev => prev.map(b => b.id === id
+      ? { ...b, label, ...(opts?.color ? { color: opts.color } : {}), ...(opts?.scale !== undefined ? { scale: opts.scale } : {}) }
+      : b));
     setQuickCreate(null);
   };
 
@@ -1372,17 +1449,19 @@ export default function MindCanvas() {
 
   // ── Add bubble ───────────────────────────────────────────────────────────
 
-  const addBubble = (label: string, parentId: string | null) => {
+  const addBubble = (label: string, parentId: string | null, opts?: { color?: string; scale?: number }) => {
     const id = `n${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
 
     if (!parentId) {
       const roots = bubbles.filter(b => b.depth === 0);
       const angle = (roots.length / Math.max(roots.length + 1, 3)) * Math.PI * 2 - Math.PI / 2;
       const R = 620 + roots.length * 40;
+      const chosenColor = opts?.color ?? ROOT_COLORS[roots.length % ROOT_COLORS.length];
       setBubbles(prev => [...prev, {
         id, depth: 0, label,
         x: Math.cos(angle) * R, y: Math.sin(angle) * R,
-        color: ROOT_COLORS[roots.length % ROOT_COLORS.length],
+        color: chosenColor,
+        ...(opts?.scale !== undefined ? { scale: opts.scale } : {}),
       }]);
       return;
     }
@@ -1415,11 +1494,15 @@ export default function MindCanvas() {
       angle = bestMid;
     }
 
+    // Children inherit the explicitly-chosen color; if none was chosen they
+    // follow the parent's color so the branch stays coherent.
+    const chosenColor = opts?.color ?? parent.color;
     setBubbles(prev => [...prev, {
       id, depth, parentId, label,
       x: parent.x + Math.cos(angle) * R,
       y: parent.y + Math.sin(angle) * R,
-      color: parent.color,
+      color: chosenColor,
+      ...(opts?.scale !== undefined ? { scale: opts.scale } : {}),
     }]);
   };
 
@@ -1516,7 +1599,19 @@ export default function MindCanvas() {
           const layer = relativeLayer(bubble.id, focusedId, byId);
           // Size always comes from the relative layer, matching the solver.
           const size  = sizeMap[bubble.id] ?? getSize(bubble);
-          const p     = positions[bubble.id] ?? { x: bubble.x, y: bubble.y };
+
+          // Lazily create MotionValues for this bubble. The RAF updates them
+          // directly so this div never re-renders just because a bubble moved.
+          let mv = bubbleMVs.current.get(bubble.id);
+          if (!mv) {
+            const px = positionsRef.current[bubble.id];
+            mv = {
+              x: motionValue((px?.x ?? bubble.x) - size / 2),
+              y: motionValue((px?.y ?? bubble.y) - size / 2),
+            };
+            bubbleMVs.current.set(bubble.id, mv);
+          }
+
           const interactive = interactiveIds.has(bubble.id);
           const visualOnly = layer === 2;
           const muted = visualOnly;
@@ -1536,8 +1631,8 @@ export default function MindCanvas() {
                 : 'cursor-grab active:cursor-grabbing'
               }`}
               style={{
-                x: p.x - size / 2,
-                y: p.y - size / 2,
+                x: mv.x,
+                y: mv.y,
                 width: size, height: size,
                 touchAction: 'none', overflow: 'visible',
                 // A locked bubble's color/size panel must draw above every
@@ -1631,9 +1726,9 @@ export default function MindCanvas() {
         })}
       </motion.div>
 
-      {/* Hint */}
-      {!focusedId && !editMode && !quickCreate && (
-        <motion.p className="absolute bottom-8 left-1/2 -translate-x-1/2 text-gray-400 font-light text-xs tracking-widest pointer-events-none select-none whitespace-nowrap"
+      {/* Hint — sits at the top so it doesn't compete with the bottom action bar */}
+      {!focusedId && !editMode && !quickCreate && !showAddPanel && (
+        <motion.p className="absolute top-20 left-1/2 -translate-x-1/2 text-gray-400 font-light text-xs tracking-widest pointer-events-none select-none whitespace-nowrap z-30"
           initial={{ opacity: 0 }} animate={{ opacity: .4 }} transition={{ delay: 1.5, duration: 1.5 }}>
           tap to enter · + to add bubbles
         </motion.p>

@@ -1,5 +1,6 @@
 ---
 name: Mind Canvas bubble model
+description: Durable rules for the bubble data model, layout, sizing, and animation loop.
 description: Core invariants of the Mind Canvas artifact — bubble-only content model, depth-driven sizing, and the non-overlap guarantee.
 ---
 
