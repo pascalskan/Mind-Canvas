@@ -1611,6 +1611,11 @@ export default function MindCanvas() {
   // ── Recolor a pillar ─────────────────────────────────────────────────────
   // A pillar's color is the identity of its whole branch, so every descendant
   // inherits it. Duplicate-checking happens inside the picker.
+  //
+  // Persistence contract: both recolor handlers write through setBubbles so the
+  // useBubbleState persistence effect fires and saves the new color to
+  // localStorage on every change. Do NOT update a MotionValue or local state
+  // instead — that would bypass the effect and silently lose the change on refresh.
 
   const recolorPillar = (id: string, color: string) => {
     const family = new Set<string>([id, ...descendantsOf(id)]);
@@ -1620,6 +1625,7 @@ export default function MindCanvas() {
   // ── Recolor a single bubble (depth 1+) ───────────────────────────────────
   // Below the pillar, color is per-bubble: it touches neither the parent nor
   // any child, so a branch can carry accents without losing its identity.
+  // See persistence contract above — setBubbles is the only correct write path.
 
   const recolorBubble = (id: string, color: string) => {
     setBubbles(prev => prev.map(b => (b.id === id ? { ...b, color } : b)));
