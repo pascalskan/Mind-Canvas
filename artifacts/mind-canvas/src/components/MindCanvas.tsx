@@ -1422,13 +1422,47 @@ export default function MindCanvas() {
 
     // iOS Safari fires touch events separately from pointer events and will
     // scroll or pinch-zoom the viewport unless we suppress them with a
-    // non-passive listener. Block multi-touch (pinch) moves and any touchstart
-    // that begins a two-finger gesture so the page never jumps underneath.
+    // non-passive listener.
+    //
+    // Strategy:
+    //   • Multi-touch (≥2 fingers): always prevent — pointer events handle pinch.
+    //   • Single-finger: prevent on the canvas background so panning never
+    //     accidentally scrolls the page. But if the finger started inside a
+    //     scrollable child (e.g. a long bubble label), let native scroll through.
+    //
+    // We track whether each single-touch sequence began in a scrollable child
+    // via a plain object captured in the closure so touchmove can consult it.
+    const touchState = { inScrollable: false };
+
     const onTouchStart = (e: TouchEvent) => {
-      if (e.touches.length >= 2) e.preventDefault();
+      if (e.touches.length >= 2) {
+        e.preventDefault();
+        return;
+      }
+      // Walk up from the touch target to find a scrollable ancestor that is
+      // not the canvas container itself.
+      let inScrollable = false;
+      let node = e.target as Element | null;
+      while (node && node !== el) {
+        const ov = window.getComputedStyle(node).overflowY;
+        if ((ov === 'scroll' || ov === 'auto') && node.scrollHeight > node.clientHeight) {
+          inScrollable = true;
+          break;
+        }
+        node = node.parentElement;
+      }
+      touchState.inScrollable = inScrollable;
+      // Suppress the event for canvas-background touches so iOS never scrolls
+      // the page during a one-finger pan.
+      if (!inScrollable) e.preventDefault();
     };
     const onTouchMove = (e: TouchEvent) => {
-      if (e.touches.length >= 2) e.preventDefault();
+      if (e.touches.length >= 2) {
+        e.preventDefault();
+        return;
+      }
+      // Carry forward the decision made at touchstart.
+      if (!touchState.inScrollable) e.preventDefault();
     };
     el.addEventListener('touchstart', onTouchStart, { passive: false });
     el.addEventListener('touchmove',  onTouchMove,  { passive: false });
