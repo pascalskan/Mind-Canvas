@@ -33,6 +33,8 @@ interface BubbleContextValue {
   updateBubblePosition: (id: string, pos: { x: number; y: number }) => void;
   /** Atomically update positions for many bubbles in a single render. */
   batchUpdatePositions: (updates: { id: string; x: number; y: number }[]) => void;
+  /** Re-snap all grandchild pips to the opposite-from-grandparent position. */
+  snapGrandchildren: () => void;
 
   exportMap: () => Promise<void>;
   importMap: () => Promise<void>;
@@ -382,16 +384,20 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const snapGrandchildren = useCallback(() => {
+    setBubbles(prev => correctGrandchildPositions(prev, focusedId));
+  }, [focusedId]);
+
   const value = useMemo<BubbleContextValue>(() => ({
     bubbles, focusedId, editMode, editSelection, byId,
     setFocusedId, setEditMode, setEditSelection,
     addBubble, deleteBubble, renameBubble, recolorBubble, resizeBubble,
-    updateBubblePosition, batchUpdatePositions,
+    updateBubblePosition, batchUpdatePositions, snapGrandchildren,
     exportMap, importMap,
   }), [
     bubbles, focusedId, editMode, editSelection, byId,
     addBubble, deleteBubble, renameBubble, recolorBubble, resizeBubble,
-    updateBubblePosition, batchUpdatePositions,
+    updateBubblePosition, batchUpdatePositions, snapGrandchildren,
     exportMap, importMap,
   ]);
 

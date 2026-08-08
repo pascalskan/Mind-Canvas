@@ -7,6 +7,7 @@ import { CanvasBackground } from '@/components/CanvasBackground';
 import {
   getBubbleDisplaySize, isInThreeLayerView, relativeLayer,
   getAllDescendants, resolveCollisions, ringRadius,
+  LAYER_SIZES_OVERVIEW, LAYER_SIZES_FOCUSED, sizeForDepth,
 } from '@/lib/bubbleLayout';
 import { BubbleData } from '@/lib/bubbleTypes';
 
@@ -44,6 +45,38 @@ function fitBounds(
 
 function lerp(a: number, b: number, t: number) { return a + (b - a) * t; }
 
+/**
+ * Snap a dragged bubble's world position onto the ring it orbits around its
+ * parent. Returns the constrained (x, y); unchanged if the bubble has no parent.
+ */
+function constrainToParentRing(
+  newWX: number,
+  newWY: number,
+  dragged: BubbleData,
+  byId: Record<string, BubbleData>,
+  bubbles: BubbleData[],
+  focusedId: string | null,
+): { x: number; y: number } {
+  const parent = byId[dragged.parentId ?? ''];
+  if (!parent) return { x: newWX, y: newWY };
+
+  const sizes  = focusedId ? LAYER_SIZES_FOCUSED : LAYER_SIZES_OVERVIEW;
+  const pLayer = focusedId
+    ? relativeLayer(parent.id, focusedId, byId)
+    : parent.depth <= 2 ? parent.depth : -1;
+  const cLayer = pLayer >= 0 ? pLayer + 1 : -1;
+  const pr = pLayer >= 0 && pLayer <= 2 ? sizes[pLayer] / 2 : sizeForDepth(parent.depth) / 2;
+  const cr = cLayer >= 0 && cLayer <= 2 ? sizes[cLayer] / 2 : sizeForDepth(dragged.depth) / 2;
+  // +1 to include the dragged bubble itself in sibling count
+  const sibCount = bubbles.filter(b => b.parentId === dragged.parentId && b.id !== dragged.id).length + 1;
+  const rr       = ringRadius(pr, cr, sibCount);
+
+  const dx    = newWX - parent.x;
+  const dy    = newWY - parent.y;
+  const angle = Math.atan2(dy, dx);
+  return { x: parent.x + Math.cos(angle) * rr, y: parent.y + Math.sin(angle) * rr };
+}
+
 const PHYS_GAP = 12;       // min gap between bubble edges, world units
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -59,7 +92,7 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: P
   const {
     bubbles, focusedId, editMode, editSelection, byId,
     setFocusedId, setEditSelection, updateBubblePosition,
-    batchUpdatePositions,
+    batchUpdatePositions, snapGrandchildren,
   } = useBubbles();
 
   // ── Camera ──────────────────────────────────────────────────────────────────
@@ -105,8 +138,9 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: P
   const batchUpdateRef = useRef(batchUpdatePositions); batchUpdateRef.current = batchUpdatePositions;
   const setFocusedRef = useRef(setFocusedId); setFocusedRef.current = setFocusedId;
   const setEditSelRef = useRef(setEditSelection); setEditSelRef.current = setEditSelection;
-  const onLongPressRef    = useRef(onLongPressAddChild); onLongPressRef.current    = onLongPressAddChild;
-  const onDoubleTapRef    = useRef(onDoubleTapBubble);  onDoubleTapRef.current    = onDoubleTapBubble;
+  const onLongPressRef        = useRef(onLongPressAddChild); onLongPressRef.current        = onLongPressAddChild;
+  const onDoubleTapRef        = useRef(onDoubleTapBubble);  onDoubleTapRef.current        = onDoubleTapBubble;
+  const snapGrandchildrenRef  = useRef(snapGrandchildren);  snapGrandchildrenRef.current  = snapGrandchildren;
 
   // Tracks the last bubble tap for double-tap detection.
   const lastTapRef = useRef<{ id: string | null; time: number }>({ id: null, time: 0 });
@@ -432,16 +466,27 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: P
         }
 
         if (draggingIdRef.current && isDraggingBubble.current) {
-          const s     = cameraRef.current.scale;
-          const newWX = bubbleDragStart.current.wx + dx / s;
-          const newWY = bubbleDragStart.current.wy + dy / s;
+          const s    = cameraRef.current.scale;
+          let newWX  = bubbleDragStart.current.wx + dx / s;
+          let newWY  = bubbleDragStart.current.wy + dy / s;
+
+          // Constrain to the ring around parent so the bubble can only orbit,
+          // not drift away or collapse onto, its parent.
+          const b = dragBubbleRef.current;
+          if (b?.parentId) {
+            const c = constrainToParentRing(
+              newWX, newWY, b, byIdRef.current, bubblesRef.current, focusedIdRef.current,
+            );
+            newWX = c.x;
+            newWY = c.y;
+          }
+
           dragWX.current = newWX;
           dragWY.current = newWY;
 
           // Move the drag-overlay bubble
-          const fid  = focusedIdRef.current;
-          const bid  = byIdRef.current;
-          const b    = dragBubbleRef.current;
+          const fid = focusedIdRef.current;
+          const bid = byIdRef.current;
           if (b) {
             const size = getBubbleDisplaySize(b, fid, bid) * cameraRef.current.scale;
             const { sx, sy } = toScreen(newWX, newWY, cameraRef.current);
@@ -449,8 +494,11 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: P
             dragScreenY.setValue(sy - size / 2);
           }
 
-          // Translate the entire subtree natively (no JS re-render per frame)
-          subtreeDeltaAnim.setValue({ x: dx, y: dy });
+          // Translate subtree by the actual constrained screen-space delta
+          // (not raw touch delta) so children move exactly with their parent.
+          const actualDx = (newWX - bubbleDragStart.current.wx) * s;
+          const actualDy = (newWY - bubbleDragStart.current.wy) * s;
+          subtreeDeltaAnim.setValue({ x: actualDx, y: actualDy });
           return;
         }
 
@@ -478,24 +526,35 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: P
         subtreeDeltaAnim.setValue({ x: 0, y: 0 });
 
         if (isDraggingBubble.current && draggingIdRef.current) {
-          const draggedId = draggingIdRef.current;
-          const s         = cameraRef.current.scale;
-          const deltaX    = dx / s;
-          const deltaY    = dy / s;
-          const newX      = bubbleDragStart.current.wx + deltaX;
-          const newY      = bubbleDragStart.current.wy + deltaY;
+          const draggedId  = draggingIdRef.current;
+          const s          = cameraRef.current.scale;
+          const allBubbles = bubblesRef.current;
+          const bid        = byIdRef.current;
+
+          // Apply ring constraint to final drop position
+          let newX = bubbleDragStart.current.wx + dx / s;
+          let newY = bubbleDragStart.current.wy + dy / s;
+          const draggedB = bid[draggedId];
+          if (draggedB?.parentId) {
+            const c = constrainToParentRing(
+              newX, newY, draggedB, bid, allBubbles, focusedIdRef.current,
+            );
+            newX = c.x;
+            newY = c.y;
+          }
+
+          // Actual world-space delta after constraint
+          const actualDeltaX = newX - bubbleDragStart.current.wx;
+          const actualDeltaY = newY - bubbleDragStart.current.wy;
 
           // Build complete new positions: dragged bubble + all descendants
-          const allBubbles  = bubblesRef.current;
-          const descIds     = getAllDescendants(draggedId, allBubbles);
-          const bid         = byIdRef.current;
-
+          const descIds = getAllDescendants(draggedId, allBubbles);
           const updates: { id: string; x: number; y: number }[] = [
             { id: draggedId, x: newX, y: newY },
             ...descIds.map(descId => {
               const desc = bid[descId];
               return desc
-                ? { id: descId, x: desc.x + deltaX, y: desc.y + deltaY }
+                ? { id: descId, x: desc.x + actualDeltaX, y: desc.y + actualDeltaY }
                 : null;
             }).filter(Boolean) as { id: string; x: number; y: number }[],
           ];
@@ -517,6 +576,9 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: P
           }
 
           batchUpdateRef.current([...allUpdates.values()]);
+          // Snap grandchild pips to the opposite-from-grandparent side of their
+          // parent now that the parent has a new position on its ring.
+          snapGrandchildrenRef.current();
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
         } else if (dist < TAP_DIST && dur < TAP_MS && !pinchStart.current) {
