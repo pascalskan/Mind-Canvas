@@ -1297,9 +1297,15 @@ export default function MindCanvas() {
     activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
     if (activePointers.current.size === 1) {
-      // Single-finger pan — same behaviour as before.
-      cameraX.set(cameraX.get() + e.clientX - prev.x);
-      cameraY.set(cameraY.get() + e.clientY - prev.y);
+      // Single-finger pan.
+      // Touch pointers are panned directly by the touchmove listener instead:
+      // on iOS Safari, preventDefault() in touchstart suppresses pointer events
+      // so the touchmove handler is the only reliable path. On non-iOS browsers
+      // both fire, but we let touchmove own it here to avoid double-counting.
+      if (e.pointerType !== 'touch') {
+        cameraX.set(cameraX.get() + e.clientX - prev.x);
+        cameraY.set(cameraY.get() + e.clientY - prev.y);
+      }
     } else if (activePointers.current.size >= 2) {
       // Two-finger pinch — zoom centred on the midpoint between both fingers,
       // using the same clamp limits as the wheel handler (0.06 – 5×).
@@ -1364,7 +1370,9 @@ export default function MindCanvas() {
     //
     // We track whether each single-touch sequence began in a scrollable child
     // via a plain object captured in the closure so touchmove can consult it.
-    const touchState = { inScrollable: false };
+    // touchState is recreated each time this effect runs, so closures inside
+    // onTouchStart / onTouchMove always see the same object reference.
+    const touchState = { inScrollable: false, lastX: 0, lastY: 0 };
 
     const onTouchStart = (e: TouchEvent) => {
       if (e.touches.length >= 2) {
@@ -1386,7 +1394,15 @@ export default function MindCanvas() {
       touchState.inScrollable = inScrollable;
       // Suppress the event for canvas-background touches so iOS never scrolls
       // the page during a one-finger pan.
-      if (!inScrollable) e.preventDefault();
+      if (!inScrollable) {
+        e.preventDefault();
+        // Seed starting position so onTouchMove can compute deltas directly.
+        // This is the primary pan path on iOS Safari: calling preventDefault()
+        // in touchstart suppresses the pointer events that onContainerMove
+        // depends on, so we must drive panning from touch events instead.
+        touchState.lastX = e.touches[0].clientX;
+        touchState.lastY = e.touches[0].clientY;
+      }
     };
     const onTouchMove = (e: TouchEvent) => {
       if (e.touches.length >= 2) {
@@ -1394,7 +1410,19 @@ export default function MindCanvas() {
         return;
       }
       // Carry forward the decision made at touchstart.
-      if (!touchState.inScrollable) e.preventDefault();
+      if (!touchState.inScrollable) {
+        e.preventDefault();
+        // Drive pan directly from touch events so it works even when iOS has
+        // suppressed the pointer events. On non-iOS browsers where pointer
+        // events still fire alongside touch events, onContainerMove skips the
+        // pan step for touch pointers (checked via e.pointerType === 'touch')
+        // so there is no double-counting.
+        const t = e.touches[0];
+        cameraX.set(cameraX.get() + t.clientX - touchState.lastX);
+        cameraY.set(cameraY.get() + t.clientY - touchState.lastY);
+        touchState.lastX = t.clientX;
+        touchState.lastY = t.clientY;
+      }
     };
     el.addEventListener('touchstart', onTouchStart, { passive: false });
     el.addEventListener('touchmove',  onTouchMove,  { passive: false });
