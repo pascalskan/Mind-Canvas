@@ -307,16 +307,22 @@ function loadBubbles(): BubbleData[] {
   }
 }
 
-function saveBubbles(bubbles: BubbleData[]): boolean {
+// localStorage quota is typically 5 MB (UTF-16, so 2 bytes per char).
+// Warn when the compressed payload exceeds 80 % of that estimate.
+const STORAGE_QUOTA_BYTES  = 5 * 1024 * 1024;
+const STORAGE_WARN_RATIO   = 0.8;
+
+function saveBubbles(bubbles: BubbleData[]): { ok: boolean; bytes: number } {
   try {
     const state: StoredState = { version: STORAGE_VERSION, bubbles };
     const json = JSON.stringify(state);
     const compressed = LZString.compress(json);
     localStorage.setItem(STORAGE_KEY, compressed);
-    return true;
+    // Each JS string character occupies 2 bytes in UTF-16 storage.
+    return { ok: true, bytes: compressed.length * 2 };
   } catch {
     // Storage full or unavailable — caller decides how to surface this.
-    return false;
+    return { ok: false, bytes: 0 };
   }
 }
 
@@ -1102,7 +1108,8 @@ export default function MindCanvas() {
   const [editSelection,  setEditSelection]  = useState<string | null>(null);
   const [quickCreate,    setQuickCreate]    = useState<{ id: string; parentId: string; anchor: { x: number; y: number } } | null>(null);
   const [showColorPicker, setShowColorPicker] = useState(false);
-  const [saveFailedToast, setSaveFailedToast] = useState(false);
+  const [saveFailedToast,  setSaveFailedToast]  = useState(false);
+  const [storageNearLimit, setStorageNearLimit] = useState(false);
   const saveToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1189,11 +1196,16 @@ export default function MindCanvas() {
 
   // Persist to localStorage on every change so the canvas survives page refreshes.
   useEffect(() => {
-    const ok = saveBubbles(bubbles);
+    const { ok, bytes } = saveBubbles(bubbles);
     if (!ok) {
       setSaveFailedToast(true);
       if (saveToastTimer.current) clearTimeout(saveToastTimer.current);
       saveToastTimer.current = setTimeout(() => setSaveFailedToast(false), 5000);
+    } else {
+      // Show a persistent warning banner when payload crosses 80 % of the
+      // estimated 5 MB localStorage quota. Clear it automatically when the
+      // map shrinks back below the threshold.
+      setStorageNearLimit(bytes >= STORAGE_QUOTA_BYTES * STORAGE_WARN_RATIO);
     }
   }, [bubbles]);
 
@@ -1734,6 +1746,17 @@ export default function MindCanvas() {
           className="absolute top-5 left-1/2 -translate-x-1/2 z-50 pointer-events-none select-none text-center"
           style={{ background: 'rgba(255,255,255,.84)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 20, padding: '8px 18px', boxShadow: '0 2px 16px rgba(0,0,0,.06),inset 0 0 0 1px rgba(130,110,180,.25)', fontSize: 12, color: 'hsl(260,40%,50%)', letterSpacing: '.04em', fontWeight: 300, maxWidth: 'calc(100vw - 32px)' }}>
           Edit mode · double-tap to lock · tap name to rename · × deletes
+        </motion.div>
+      )}
+
+      {/* Storage-near-limit banner — persistent, auto-clears when usage drops.
+          Sits below the breadcrumb row (top-5) so the two never collide. */}
+      {storageNearLimit && !saveFailedToast && (
+        <motion.div
+          initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}
+          className="absolute top-14 left-1/2 -translate-x-1/2 z-50 pointer-events-none select-none text-center"
+          style={{ background: 'rgba(255,251,235,.95)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 20, padding: '9px 20px', boxShadow: '0 2px 20px rgba(0,0,0,.08),inset 0 0 0 1px rgba(180,140,30,.25)', fontSize: 12, color: 'hsl(38,60%,32%)', letterSpacing: '.03em', fontWeight: 300, maxWidth: 'calc(100vw - 32px)', whiteSpace: 'nowrap' }}>
+          ☁ Your map is getting large — consider exporting or clearing unused branches
         </motion.div>
       )}
 
