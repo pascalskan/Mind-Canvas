@@ -12,6 +12,34 @@ import {
   loadBubbles,
   type BubbleData,
 } from '../persistence';
+
+// ─── Cloud sync ───────────────────────────────────────────────────────────────
+// Both web and mobile use the same API server as source of truth so edits on
+// one platform immediately appear on the other.  localStorage stays as the
+// instant-load warm cache; the API is the canonical copy.
+
+const SYNC_URL = '/api/map';
+
+async function fetchFromCloud(): Promise<BubbleData[] | null> {
+  try {
+    const res = await fetch(SYNC_URL);
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data || !Array.isArray(data.bubbles) || data.bubbles.length === 0) return null;
+    return data.bubbles as BubbleData[];
+  } catch {
+    return null;
+  }
+}
+
+function pushToCloud(bubbles: BubbleData[]): void {
+  // Fire-and-forget — localStorage already has a local copy.
+  fetch(SYNC_URL, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ version: 2, bubbles }),
+  }).catch(() => { /* ignore network errors */ });
+}
 import {
   MAX_DEPTH,
   ROOT_COLORS,
@@ -59,13 +87,21 @@ export function useBubbleState(initialBubbles: BubbleData[]): BubbleStateResult 
     [bubbles],
   );
 
+  // ── Cloud bootstrap: on mount, prefer cloud data over warm localStorage cache.
+  useEffect(() => {
+    fetchFromCloud().then(cloudBubbles => {
+      if (cloudBubbles) setBubbles(cloudBubbles);
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ── Persistence effect ────────────────────────────────────────────────────
-  // Runs on every bubbles change — same logic as the original useEffect in
-  // MindCanvas.tsx so a regression in either the handlers or this effect will
-  // fail the integration tests.
+  // Runs on every bubbles change — writes to localStorage immediately, then
+  // pushes to the API server so the mobile app sees the latest data.
   useEffect(() => {
     const result = saveBubbles(bubbles);
     setLastSave(result);
+    pushToCloud(bubbles);
   }, [bubbles]);
 
   // ── addBubble ─────────────────────────────────────────────────────────────

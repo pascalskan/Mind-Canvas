@@ -2,11 +2,13 @@ import React, {
   createContext, useCallback, useContext, useEffect, useMemo, useRef, useState,
 } from 'react';
 import { Alert, Platform } from 'react-native';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
 import { BubbleData, MAX_DEPTH } from '@/lib/bubbleTypes';
 import {
   buildInitialBubbles, ringRadius, sizeForDepth, ROOT_COLORS, PILLAR_COLORS,
 } from '@/lib/bubbleLayout';
-import { loadBubbles, parseBubbleJson, saveBubbles } from '@/lib/persistence';
+import { loadBubbles, parseBubbleJson, saveBubbles, fetchFromCloud, pushToCloud } from '@/lib/persistence';
 
 // ── Context shape ──────────────────────────────────────────────────────────────
 
@@ -51,18 +53,23 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
   const [editSelection, setEditSelection] = useState<string | null>(null);
   const [loaded,        setLoaded]        = useState(false);
 
-  // Load persisted data on mount
+  // Load persisted data on mount: warm-start from AsyncStorage, then prefer cloud.
   useEffect(() => {
-    loadBubbles(INITIAL).then(saved => {
-      setBubbles(saved);
+    loadBubbles(INITIAL).then(local => {
+      setBubbles(local);
       setLoaded(true);
+      // Cloud overrides local if available (source of truth shared with web app).
+      fetchFromCloud().then(cloud => {
+        if (cloud) setBubbles(cloud);
+      });
     });
   }, []);
 
-  // Save on every change (after initial load)
+  // Save on every change (after initial load) — local + cloud.
   useEffect(() => {
     if (!loaded) return;
     saveBubbles(bubbles);
+    pushToCloud(bubbles);
   }, [bubbles, loaded]);
 
   const byId = useMemo(
@@ -184,13 +191,11 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
       document.body.removeChild(a); URL.revokeObjectURL(url);
     } else {
       try {
-        const FileSystem = await import('expo-file-system');
-        const Sharing    = await import('expo-sharing');
         const uri = (FileSystem.documentDirectory ?? '') + filename;
-        await FileSystem.default.writeAsStringAsync(uri, json, {
+        await FileSystem.writeAsStringAsync(uri, json, {
           encoding: FileSystem.EncodingType.UTF8,
         });
-        await Sharing.default.shareAsync(uri, {
+        await Sharing.shareAsync(uri, {
           mimeType: 'application/json',
           dialogTitle: 'Export mind map',
         });
@@ -221,14 +226,13 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
     } else {
       try {
         const DocumentPicker = await import('expo-document-picker');
-        const FileSystem     = await import('expo-file-system');
         const result = await DocumentPicker.default.getDocumentAsync({
           type: ['application/json', 'text/plain', '*/*'],
           copyToCacheDirectory: true,
         });
         if (result.canceled || !result.assets?.[0]) return;
         const uri = result.assets[0].uri;
-        const text = await FileSystem.default.readAsStringAsync(uri, {
+        const text = await FileSystem.readAsStringAsync(uri, {
           encoding: FileSystem.EncodingType.UTF8,
         });
         const imported = parseBubbleJson(text);

@@ -102,7 +102,8 @@ export default function MainScreen() {
         </View>
       )}
 
-      {/* ── Toolbar ─────────────────────────────────────────────────────── */}
+      {/* ── Toolbar — hidden only when the Add-bubble sheet is open ──── */}
+      {!showAdd && (
       <View
         style={[styles.toolbar, { bottom: bottomInset + 16 }]}
         pointerEvents="box-none"
@@ -151,6 +152,7 @@ export default function MainScreen() {
           </View>
         )}
       </View>
+      )}
 
       {/* ── Edit bubble panel ────────────────────────────────────────────── */}
       {editMode && editSelection && (

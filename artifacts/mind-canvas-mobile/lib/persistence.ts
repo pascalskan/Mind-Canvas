@@ -1,7 +1,43 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { BubbleData, StoredState, STORAGE_KEY, STORAGE_VERSION } from './bubbleTypes';
 
-// ── Save / Load ───────────────────────────────────────────────────────────────
+// ── Cloud sync ─────────────────────────────────────────────────────────────────
+// The API server is the shared source of truth between web and mobile.
+// AsyncStorage keeps the offline warm cache; the cloud is canonical.
+
+function cloudUrl(): string {
+  const domain = process.env.EXPO_PUBLIC_DOMAIN ?? '';
+  if (!domain) return '';
+  return `https://${domain}/api/map`;
+}
+
+export async function fetchFromCloud(): Promise<BubbleData[] | null> {
+  const url = cloudUrl();
+  if (!url) return null;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    const res = await fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timer));
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data || !Array.isArray(data.bubbles) || data.bubbles.length === 0) return null;
+    return data.bubbles as BubbleData[];
+  } catch {
+    return null;
+  }
+}
+
+export function pushToCloud(bubbles: BubbleData[]): void {
+  const url = cloudUrl();
+  if (!url) return;
+  fetch(url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ version: STORAGE_VERSION, bubbles }),
+  }).catch(() => { /* ignore */ });
+}
+
+// ── Local save / load ─────────────────────────────────────────────────────────
 
 export async function saveBubbles(bubbles: BubbleData[]): Promise<boolean> {
   try {
@@ -29,7 +65,7 @@ export async function loadBubbles(initial: BubbleData[]): Promise<BubbleData[]> 
   }
 }
 
-// ── Import validation (same rules as web app) ─────────────────────────────────
+// ── Import validation ─────────────────────────────────────────────────────────
 
 function isValidBubble(b: unknown): b is BubbleData {
   if (!b || typeof b !== 'object') return false;
@@ -66,7 +102,6 @@ function isValidGraph(bubbles: BubbleData[]): boolean {
   return true;
 }
 
-/** Parse and validate a JSON string exported by either platform. Returns null if invalid. */
 export function parseBubbleJson(text: string): BubbleData[] | null {
   try {
     const parsed: StoredState = JSON.parse(text);
