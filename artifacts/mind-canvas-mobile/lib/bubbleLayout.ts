@@ -3,7 +3,7 @@ import { hslToHex } from './hslToHex';
 
 export { MAX_DEPTH };
 
-// ── Palette (matches web app hsl values exactly) ─────────────────────────────
+// ── Palette ───────────────────────────────────────────────────────────────────
 
 const PILLAR_HSL: [number, number, number][] = [
   [250, 60, 58], [340, 64, 60], [170, 48, 46],
@@ -18,33 +18,29 @@ const ROOT_HSL: [number, number, number][] = [
 export const PILLAR_COLORS: string[] = PILLAR_HSL.map(([h, s, l]) => hslToHex(h, s, l));
 export const ROOT_COLORS:   string[] = ROOT_HSL.map(([h, s, l]) => hslToHex(h, s, l));
 
-// ── Scale options ─────────────────────────────────────────────────────────────
-
 export const SCALE_OPTIONS: number[] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
+
+// Gap between bubble edges in world units — matches web GAP = 9
+export const GAP = 9;
 
 // ── Sizing ────────────────────────────────────────────────────────────────────
 
-// World-unit base size for each depth level. Camera starts at ~0.28 so these
-// appear roughly 50-100 px on screen in the overview.
 const BASE_SIZES = [200, 160, 130, 110, 95, 82, 72, 64, 58, 52, 48];
 
 export function sizeForDepth(depth: number): number {
   return BASE_SIZES[Math.min(depth, BASE_SIZES.length - 1)];
 }
-
 export function getSize(b: BubbleData): number {
   return sizeForDepth(b.depth) * (b.scale ?? 1.0);
 }
 
-// Display sizes for the three-layer view (world units).
-// Matches web constants exactly: LAYER_SIZE_OVERVIEW = [320, 166, 18]
-// and LAYER_SIZE_FOCUSED = [250, 132, 16]. Layer-2 items render as tiny dots.
+// ── Three-layer display sizes (world units) ───────────────────────────────────
+// Matches web exactly: LAYER_SIZE_OVERVIEW=[320,166,18], LAYER_SIZE_FOCUSED=[250,132,16]
 export const LAYER_SIZES_OVERVIEW: [number, number, number] = [320, 166, 18];
 export const LAYER_SIZES_FOCUSED:  [number, number, number] = [250, 132, 16];
 
-// ── Ring geometry ──────────────────────────────────────────────────────────────
+// ── Ring geometry ─────────────────────────────────────────────────────────────
 
-/** Radius of the orbit ring for n children around a parent. */
 export function ringRadius(parentR: number, childR: number, n: number): number {
   const minGap = 12;
   if (n <= 1) return parentR + childR + minGap;
@@ -54,10 +50,6 @@ export function ringRadius(parentR: number, childR: number, n: number): number {
 
 // ── Three-layer view ──────────────────────────────────────────────────────────
 
-/**
- * Returns which display layer a bubble occupies (0, 1, 2) or -1 if not visible.
- * Layer 0 = focused (or root in overview), 1 = children, 2 = grandchildren.
- */
 export function relativeLayer(
   bubbleId: string,
   focusedId: string | null,
@@ -65,12 +57,7 @@ export function relativeLayer(
 ): number {
   const b = byId[bubbleId];
   if (!b) return -1;
-
-  if (!focusedId) {
-    // Overview: show depth 0 / 1 / 2 only
-    return b.depth <= 2 ? b.depth : -1;
-  }
-
+  if (!focusedId) return b.depth <= 2 ? b.depth : -1;
   if (b.id === focusedId) return 0;
   if (b.parentId === focusedId) return 1;
   const parent = byId[b.parentId ?? ''];
@@ -86,7 +73,10 @@ export function isInThreeLayerView(
   return relativeLayer(b.id, focusedId, byId) >= 0;
 }
 
-/** World-unit display size for the three-layer view. */
+/**
+ * World-unit display size for the three-layer view.
+ * Layer-2 pips are always the fixed pip size (never multiplied by bubble scale).
+ */
 export function getBubbleDisplaySize(
   b: BubbleData,
   focusedId: string | null,
@@ -95,15 +85,87 @@ export function getBubbleDisplaySize(
   const layer = relativeLayer(b.id, focusedId, byId);
   if (layer < 0) return 0;
   const sizes = focusedId ? LAYER_SIZES_FOCUSED : LAYER_SIZES_OVERVIEW;
+  if (layer === 2) return sizes[2];                      // pip — never scaled
   return sizes[layer] * (b.scale ?? 1.0);
 }
 
-// ── Initial bubbles ───────────────────────────────────────────────────────────
+// ── Collision resolution ──────────────────────────────────────────────────────
 
-let _counter = 0;
-function sid(): string { return `init${_counter++}`; }
+/**
+ * Port of the web's resolveCollisions.
+ * Runs `iterations` pairwise-separation passes on all visible bubbles.
+ * Radii are taken from getBubbleDisplaySize so rendered circles don't overlap.
+ * The dragged bubble (if any) is treated as immovable (infinite mass).
+ *
+ * Returns a map of id → new {x, y} for every visible bubble whose position
+ * changed. Bubbles not in the three-layer view are untouched.
+ */
+export function resolveCollisions(
+  bubbles: BubbleData[],
+  focusedId: string | null,
+  byId: Record<string, BubbleData>,
+  draggingId: string | null = null,
+  iterations = 4,
+): Record<string, { x: number; y: number }> {
+  // Only consider visible bubbles
+  const visible = bubbles.filter(b => isInThreeLayerView(b, focusedId, byId));
+  if (visible.length < 2) return {};
 
-/** Returns the IDs of all descendants of a given bubble (children, grandchildren, …). */
+  // Mutable position copy
+  const pos: Record<string, { x: number; y: number }> = {};
+  for (const b of visible) pos[b.id] = { x: b.x, y: b.y };
+
+  // Radii in world units (from display sizes)
+  const radii: Record<string, number> = {};
+  for (const b of visible) {
+    radii[b.id] = getBubbleDisplaySize(b, focusedId, byId) / 2;
+  }
+
+  const ids = visible.map(b => b.id);
+
+  for (let iter = 0; iter < iterations; iter++) {
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        const ia = ids[i], ib = ids[j];
+        const ra = radii[ia], rb = radii[ib];
+        const minDist = ra + rb + GAP;
+
+        const dx = pos[ib].x - pos[ia].x;
+        const dy = pos[ib].y - pos[ia].y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
+        if (dist >= minDist) continue;
+
+        const overlap = minDist - dist;
+        // Mass proportional to area → larger bubbles move less
+        const ma = ra * ra, mb = rb * rb;
+        const total = ma + mb;
+        const aFixed = ia === draggingId;
+        const bFixed = ib === draggingId;
+        const fa = aFixed ? 0 : bFixed ? 1 : mb / total;
+        const fb = bFixed ? 0 : aFixed ? 1 : ma / total;
+
+        const nx = dx / dist, ny = dy / dist;
+        pos[ia] = { x: pos[ia].x - nx * overlap * fa, y: pos[ia].y - ny * overlap * fa };
+        pos[ib] = { x: pos[ib].x + nx * overlap * fb, y: pos[ib].y + ny * overlap * fb };
+      }
+    }
+  }
+
+  // Return only positions that actually moved
+  const result: Record<string, { x: number; y: number }> = {};
+  for (const b of visible) {
+    const orig = { x: b.x, y: b.y };
+    const res  = pos[b.id];
+    if (Math.abs(res.x - orig.x) > 0.05 || Math.abs(res.y - orig.y) > 0.05) {
+      result[b.id] = res;
+    }
+  }
+  return result;
+}
+
+// ── Subtree helper ────────────────────────────────────────────────────────────
+
+/** Returns IDs of every descendant of `id` (direct + deep). */
 export function getAllDescendants(id: string, bubbles: BubbleData[]): string[] {
   const result: string[] = [];
   const queue = [id];
@@ -118,6 +180,11 @@ export function getAllDescendants(id: string, bubbles: BubbleData[]): string[] {
   }
   return result;
 }
+
+// ── Initial bubbles ───────────────────────────────────────────────────────────
+
+let _counter = 0;
+function sid(): string { return `init${_counter++}`; }
 
 export function buildInitialBubbles(): BubbleData[] {
   _counter = 0;

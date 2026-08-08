@@ -11,18 +11,25 @@ import { BubbleData, MAX_DEPTH } from '@/lib/bubbleTypes';
 
 interface Props {
   onClose: () => void;
+  /**
+   * When set (e.g. from a long-press on a bubble), the panel opens with this
+   * bubble pre-selected as the parent — equivalent to Shift+click on the web.
+   */
+  initialParentId?: string | null;
 }
 
-export default function AddBubblePanel({ onClose }: Props) {
+export default function AddBubblePanel({ onClose, initialParentId }: Props) {
   const { bubbles, byId, addBubble, focusedId } = useBubbles();
   const insets = useSafeAreaInsets();
 
+  // Resolve initial parent: prefer initialParentId, then focusedId, then null
+  const resolvedInitialParent = initialParentId ?? focusedId ?? null;
+
   const [label,    setLabel]    = useState('');
-  const [parentId, setParentId] = useState<string | null>(
-    focusedId ?? null,
-  );
+  const [parentId, setParentId] = useState<string | null>(resolvedInitialParent);
   const [color, setColor] = useState<string>(() => {
-    if (focusedId && byId[focusedId]) return byId[focusedId].color;
+    const src = initialParentId ?? focusedId;
+    if (src && byId[src]) return byId[src].color;
     return PILLAR_COLORS[0];
   });
   const [scale, setScale] = useState(1.0);
@@ -55,7 +62,11 @@ export default function AddBubblePanel({ onClose }: Props) {
     dismiss();
   };
 
-  const roots = bubbles.filter(b => b.depth === 0);
+  // Build the parent chip list: always include "Root level" + all roots.
+  // If initialParentId points to a non-root bubble, prepend it as a special chip.
+  const roots         = bubbles.filter(b => b.depth === 0);
+  const initialParent = initialParentId ? byId[initialParentId] : null;
+  const showSpecial   = initialParent && initialParent.depth > 0;
 
   const bottomPad = Platform.OS === 'web' ? 34 : insets.bottom;
 
@@ -64,11 +75,18 @@ export default function AddBubblePanel({ onClose }: Props) {
       {/* Backdrop */}
       <Pressable style={StyleSheet.absoluteFill} onPress={dismiss} />
 
-      <Animated.View style={[styles.panel, { paddingBottom: bottomPad + 16, transform: [{ translateY: slideY }] }]}>
+      <Animated.View
+        style={[
+          styles.panel,
+          { paddingBottom: bottomPad + 16, transform: [{ translateY: slideY }] },
+        ]}
+      >
         {/* Handle bar */}
         <View style={styles.handle} />
 
-        <Text style={styles.title}>New bubble</Text>
+        <Text style={styles.title}>
+          {showSpecial ? `Add child to "${initialParent?.label}"` : 'New bubble'}
+        </Text>
 
         {/* Label input */}
         <TextInput
@@ -97,6 +115,17 @@ export default function AddBubblePanel({ onClose }: Props) {
             selected={parentId === null}
             onPress={() => { setParentId(null); setColor(PILLAR_COLORS[0]); }}
           />
+
+          {/* Special chip for the long-pressed non-root bubble */}
+          {showSpecial && initialParent && (
+            <ParentChip
+              label={`↳ ${initialParent.label}`}
+              color={initialParent.color}
+              selected={parentId === initialParent.id}
+              onPress={() => { setParentId(initialParent.id); setColor(initialParent.color); }}
+            />
+          )}
+
           {roots.map(r => (
             <ParentChip
               key={r.id}
@@ -107,6 +136,7 @@ export default function AddBubblePanel({ onClose }: Props) {
             />
           ))}
         </ScrollView>
+
         {atMax && (
           <Text style={styles.atMaxWarning}>Maximum depth reached for this bubble.</Text>
         )}
@@ -148,17 +178,21 @@ export default function AddBubblePanel({ onClose }: Props) {
         {/* Status line */}
         <Text style={styles.status}>
           {atMax   ? `Max depth for ${parent?.label ?? ''}`
-          : parent  ? `→ inside ${parent.label}`
+          : parent  ? `→ child of ${parent.label}`
           : '→ new root bubble'}
         </Text>
 
-        {/* Buttons */}
+        {/* Action buttons */}
         <View style={styles.buttons}>
           <TouchableOpacity style={styles.cancelBtn} onPress={dismiss}>
             <Text style={styles.cancelText}>Cancel</Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.addBtn, { backgroundColor: color }, (!label.trim() || atMax) && styles.addBtnDisabled]}
+            style={[
+              styles.addBtn,
+              { backgroundColor: color },
+              (!label.trim() || atMax) && styles.addBtnDisabled,
+            ]}
             onPress={submit}
             disabled={!label.trim() || atMax}
           >
@@ -170,44 +204,41 @@ export default function AddBubblePanel({ onClose }: Props) {
   );
 }
 
-function ParentChip({ label, color, selected, onPress }: {
-  label: string; color: string; selected: boolean; onPress: () => void;
-}) {
+function ParentChip({
+  label, color, selected, onPress,
+}: { label: string; color: string; selected: boolean; onPress: () => void }) {
   return (
     <TouchableOpacity
-      style={[styles.parentChip, { borderColor: color, backgroundColor: selected ? color : 'transparent' }]}
+      style={[
+        styles.parentChip,
+        { borderColor: color, backgroundColor: selected ? color : 'transparent' },
+      ]}
       onPress={onPress}
       activeOpacity={0.75}
     >
-      <Text style={[styles.parentChipText, { color: selected ? '#fff' : color }]}>{label}</Text>
+      <Text style={[styles.parentChipText, { color: selected ? '#fff' : color }]}>
+        {label}
+      </Text>
     </TouchableOpacity>
   );
 }
 
 const styles = StyleSheet.create({
   panel: {
-    position: 'absolute',
-    bottom: 0, left: 0, right: 0,
+    position: 'absolute', bottom: 0, left: 0, right: 0,
     backgroundColor: 'rgba(252,252,254,0.97)',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    paddingHorizontal: 20,
-    paddingTop: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -3 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 12,
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    paddingHorizontal: 20, paddingTop: 12,
+    shadowColor: '#000', shadowOffset: { width: 0, height: -3 },
+    shadowOpacity: 0.08, shadowRadius: 12, elevation: 12,
   },
   handle: {
     width: 36, height: 4, borderRadius: 2,
-    backgroundColor: '#d1d5db',
-    alignSelf: 'center', marginBottom: 16,
+    backgroundColor: '#d1d5db', alignSelf: 'center', marginBottom: 16,
   },
   title: {
     fontSize: 11, fontFamily: 'Inter_600SemiBold',
-    color: '#999', letterSpacing: 1.5, textTransform: 'uppercase',
-    marginBottom: 12,
+    color: '#999', letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 12,
   },
   input: {
     fontSize: 18, fontFamily: 'Inter_400Regular', color: '#1a1a1a',
@@ -216,46 +247,34 @@ const styles = StyleSheet.create({
   },
   sectionLabel: {
     fontSize: 11, fontFamily: 'Inter_500Medium',
-    color: '#9ca3af', letterSpacing: 1.2, textTransform: 'uppercase',
-    marginBottom: 8,
+    color: '#9ca3af', letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: 8,
   },
-  parentRow: { maxHeight: 52, marginBottom: 12 },
+  parentRow:        { maxHeight: 52, marginBottom: 12 },
   parentRowContent: { gap: 8, paddingRight: 4 },
   parentChip: {
-    paddingHorizontal: 14, height: 36,
-    borderRadius: 18, borderWidth: 1.5,
-    justifyContent: 'center',
+    paddingHorizontal: 14, height: 36, borderRadius: 18,
+    borderWidth: 1.5, justifyContent: 'center',
   },
   parentChipText: { fontSize: 14, fontFamily: 'Inter_400Regular' },
-  atMaxWarning: { fontSize: 12, color: '#ef4444', marginBottom: 8 },
-  colorRow: {
-    flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 16,
-  },
+  atMaxWarning:   { fontSize: 12, color: '#ef4444', marginBottom: 8 },
+  colorRow:       { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 16 },
   swatch: {
-    width: 44, height: 44, borderRadius: 22,
-    borderColor: 'rgba(255,255,255,0.9)',
+    width: 44, height: 44, borderRadius: 22, borderColor: 'rgba(255,255,255,0.9)',
   },
-  sizeRow: { maxHeight: 44, marginBottom: 12 },
-  sizeRowContent: { gap: 8, paddingRight: 4 },
+  sizeRow:         { maxHeight: 44, marginBottom: 12 },
+  sizeRowContent:  { gap: 8, paddingRight: 4 },
   sizeChip: {
     paddingHorizontal: 14, height: 36, borderRadius: 18,
-    borderWidth: 1.5, borderColor: '#e5e7eb',
-    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1.5, borderColor: '#e5e7eb', justifyContent: 'center', alignItems: 'center',
   },
-  sizeChipSelected: { backgroundColor: '#1a1a1a', borderColor: '#1a1a1a' },
-  sizeChipText: { fontSize: 13, fontFamily: 'Inter_400Regular', color: '#666' },
+  sizeChipSelected:     { backgroundColor: '#1a1a1a', borderColor: '#1a1a1a' },
+  sizeChipText:         { fontSize: 13, fontFamily: 'Inter_400Regular', color: '#666' },
   sizeChipTextSelected: { color: '#fff' },
   status: {
-    fontSize: 12, fontFamily: 'Inter_400Regular',
-    color: '#9ca3af', marginBottom: 16,
+    fontSize: 12, fontFamily: 'Inter_400Regular', color: '#9ca3af', marginBottom: 16,
   },
-  buttons: {
-    flexDirection: 'row', justifyContent: 'flex-end', gap: 10,
-  },
-  cancelBtn: {
-    paddingHorizontal: 20, height: 44,
-    justifyContent: 'center', alignItems: 'center',
-  },
+  buttons:    { flexDirection: 'row', justifyContent: 'flex-end', gap: 10 },
+  cancelBtn:  { paddingHorizontal: 20, height: 44, justifyContent: 'center', alignItems: 'center' },
   cancelText: { fontSize: 15, fontFamily: 'Inter_400Regular', color: '#9ca3af' },
   addBtn: {
     paddingHorizontal: 28, height: 44, borderRadius: 22,
