@@ -18,6 +18,7 @@ import {
   getSize,
   ringRadius,
 } from '../lib/bubbleLayout';
+import { applyRootDrag, applyChildDrag } from '../lib/dragHelpers';
 import { useBubbleState } from '../hooks/useBubbleState';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -1486,19 +1487,10 @@ export default function MindCanvas() {
           // store an angle + a fraction of the leash, so the drag survives the
           // next frame instead of being recomputed away.
           if (dragged.parentId && band && parentPos) {
-            const nrx = dragOrigin.current.rx + sdx;
-            const nry = dragOrigin.current.ry + sdy;
-            const dx2 = nrx - parentPos.x, dy2 = nry - parentPos.y;
-            const d   = Math.hypot(dx2, dy2) || 1;
-            const span = Math.max(1, band.maxD - band.minD);
-            return {
-              ...b,
-              angle:  Math.atan2(dy2, dx2),
-              radial: clamp01((d - band.minD) / span),
-            };
+            return applyChildDrag(b, dragOrigin.current.rx, dragOrigin.current.ry, sdx, sdy, parentPos, band);
           }
           // Root / focused bubble: free world movement.
-          return { ...b, x: dragOrigin.current.bx + sdx, y: dragOrigin.current.by + sdy };
+          return applyRootDrag(b, dragOrigin.current.bx, dragOrigin.current.by, sdx, sdy);
         }
         const so = dragOrigin.current.subtreeOrigins[b.id];
         if (so) return { ...b, x: so.x + sdx, y: so.y + sdy };

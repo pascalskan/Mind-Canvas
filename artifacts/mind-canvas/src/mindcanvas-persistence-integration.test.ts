@@ -299,6 +299,225 @@ describe('renameBubble — real hook, real persistence effect', () => {
   });
 });
 
+// ─── Drag-to-reposition ───────────────────────────────────────────────────────
+// onBubbleMove in MindCanvas.tsx calls applyRootDrag / applyChildDrag (from
+// lib/dragHelpers) inside a setBubbles updater.  These tests exercise those
+// same pure functions and verify that the result is faithfully persisted by
+// the hook's useEffect and survives a loadBubbles round-trip (page refresh).
+//
+// If applyRootDrag / applyChildDrag are broken, or if the hook's persistence
+// effect develops a stale-closure bug, one or more of these tests will fail.
+
+import { applyRootDrag, applyChildDrag } from './lib/dragHelpers';
+
+// Leash band matching the SEED tree's layout.  The exact numbers are not
+// meaningful; what matters is that they are self-consistent (minD < maxD).
+const MOCK_BAND = { minD: 80, maxD: 320 };
+
+// Simulated rendered position of r0 on screen (acts as c1/c2's parent).
+const PARENT_POS = { x: 50, y: 50 };
+
+describe('drag-to-reposition — applyRootDrag → persistence', () => {
+  it('persists updated x/y after a root bubble is dragged', async () => {
+    const { result } = renderBubbleState();
+
+    const r0 = result.current.bubbles.find(b => b.id === 'r0')!;
+    // Simulate: originBx=r0.x, originBy=r0.y, sdx=300, sdy=-150
+    const sdx = 300, sdy = -150;
+    const expected = applyRootDrag(r0, r0.x, r0.y, sdx, sdy);
+
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => b.id === 'r0' ? applyRootDrag(b, b.x, b.y, sdx, sdy) : b),
+      );
+    });
+
+    const saved = readStorage();
+    const persisted = saved.find(b => b.id === 'r0');
+    expect(persisted?.x).toBeCloseTo(expected.x);
+    expect(persisted?.y).toBeCloseTo(expected.y);
+  });
+
+  it('loadBubbles restores the dragged root x/y exactly after a round-trip', async () => {
+    const { result } = renderBubbleState();
+
+    const r0 = result.current.bubbles.find(b => b.id === 'r0')!;
+    const sdx = -200, sdy = 400;
+    const expected = applyRootDrag(r0, r0.x, r0.y, sdx, sdy);
+
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => b.id === 'r0' ? applyRootDrag(b, b.x, b.y, sdx, sdy) : b),
+      );
+    });
+
+    // Simulate page refresh.
+    const restored = loadBubbles(FALLBACK);
+    const r0After = restored.find(b => b.id === 'r0');
+    expect(r0After?.x).toBeCloseTo(expected.x);
+    expect(r0After?.y).toBeCloseTo(expected.y);
+    // angle / radial should remain absent for a root bubble.
+    expect(r0After?.angle).toBeUndefined();
+    expect(r0After?.radial).toBeUndefined();
+  });
+
+  it('two sequential root drags persist the final position', async () => {
+    const { result } = renderBubbleState();
+
+    const r0 = result.current.bubbles.find(b => b.id === 'r0')!;
+    const first = applyRootDrag(r0, r0.x, r0.y, 100, 50);
+    const second = applyRootDrag(first, first.x, first.y, -30, 70);
+
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => b.id === 'r0' ? applyRootDrag(b, b.x, b.y, 100, 50) : b),
+      );
+    });
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b => {
+          if (b.id !== 'r0') return b;
+          return applyRootDrag(b, b.x, b.y, -30, 70);
+        }),
+      );
+    });
+
+    const saved = readStorage();
+    const persisted = saved.find(b => b.id === 'r0');
+    expect(persisted?.x).toBeCloseTo(second.x);
+    expect(persisted?.y).toBeCloseTo(second.y);
+  });
+});
+
+describe('drag-to-reposition — applyChildDrag → persistence', () => {
+  it('persists angle and radial (not x/y) after a child bubble is dragged', async () => {
+    const { result } = renderBubbleState();
+
+    const c1 = result.current.bubbles.find(b => b.id === 'c1')!;
+    // Simulate: originRx=220, originRy=10, sdx=60, sdy=80
+    const originRx = 220, originRy = 10, sdx = 60, sdy = 80;
+    const expected = applyChildDrag(c1, originRx, originRy, sdx, sdy, PARENT_POS, MOCK_BAND);
+
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b =>
+          b.id === 'c1'
+            ? applyChildDrag(b, originRx, originRy, sdx, sdy, PARENT_POS, MOCK_BAND)
+            : b,
+        ),
+      );
+    });
+
+    const saved = readStorage();
+    const persisted = saved.find(b => b.id === 'c1');
+    expect(persisted?.angle).toBeCloseTo(expected.angle!);
+    expect(persisted?.radial).toBeCloseTo(expected.radial!);
+    // World x/y are unchanged for a child drag.
+    expect(persisted?.x).toBe(c1.x);
+    expect(persisted?.y).toBe(c1.y);
+  });
+
+  it('loadBubbles restores dragged angle/radial exactly after a round-trip', async () => {
+    const { result } = renderBubbleState();
+
+    const c2 = result.current.bubbles.find(b => b.id === 'c2')!;
+    const originRx = 60, originRy = 230, sdx = -40, sdy = 100;
+    const expected = applyChildDrag(c2, originRx, originRy, sdx, sdy, PARENT_POS, MOCK_BAND);
+
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b =>
+          b.id === 'c2'
+            ? applyChildDrag(b, originRx, originRy, sdx, sdy, PARENT_POS, MOCK_BAND)
+            : b,
+        ),
+      );
+    });
+
+    // Simulate page refresh.
+    const restored = loadBubbles(FALLBACK);
+    const c2After = restored.find(b => b.id === 'c2');
+    expect(c2After?.angle).toBeCloseTo(expected.angle!);
+    expect(c2After?.radial).toBeCloseTo(expected.radial!);
+  });
+
+  it('only the dragged child changes; siblings keep their original fields', async () => {
+    const { result } = renderBubbleState();
+
+    const c1 = result.current.bubbles.find(b => b.id === 'c1')!;
+
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b =>
+          b.id === 'c1'
+            ? applyChildDrag(b, 220, 10, 50, 50, PARENT_POS, MOCK_BAND)
+            : b,
+        ),
+      );
+    });
+
+    const saved = readStorage();
+    // c2 must be untouched.
+    const c2 = saved.find(b => b.id === 'c2')!;
+    expect(c2.x).toBe(0);
+    expect(c2.y).toBe(200);
+    expect(c2.angle).toBeUndefined();
+    expect(c2.radial).toBeUndefined();
+    // Root must be untouched.
+    const r0 = saved.find(b => b.id === 'r0')!;
+    expect(r0.x).toBe(0);
+    expect(r0.y).toBe(0);
+    // c1's world coords stay the same; only angle/radial change.
+    const c1After = saved.find(b => b.id === 'c1')!;
+    expect(c1After.x).toBe(c1.x);
+    expect(c1After.y).toBe(c1.y);
+  });
+
+  it('hook in-memory state and localStorage agree after a child drag', async () => {
+    const { result } = renderBubbleState();
+
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b =>
+          b.id === 'c1'
+            ? applyChildDrag(b, 220, 10, 80, -60, PARENT_POS, MOCK_BAND)
+            : b,
+        ),
+      );
+    });
+
+    const saved  = readStorage();
+    const inMem  = result.current.bubbles.find(b => b.id === 'c1');
+    const onDisk = saved.find(b => b.id === 'c1');
+
+    expect(inMem?.angle).toBeCloseTo(onDisk?.angle!);
+    expect(inMem?.radial).toBeCloseTo(onDisk?.radial!);
+  });
+
+  it('radial is clamped to [0, 1] when the pointer moves beyond the leash', async () => {
+    const { result } = renderBubbleState();
+
+    const c1 = result.current.bubbles.find(b => b.id === 'c1')!;
+    // Push far beyond maxD to exercise the clamp01 ceiling.
+    const expected = applyChildDrag(c1, 220, 10, 5000, 5000, PARENT_POS, MOCK_BAND);
+    expect(expected.radial).toBeLessThanOrEqual(1);
+
+    await act(async () => {
+      result.current.setBubbles(prev =>
+        prev.map(b =>
+          b.id === 'c1'
+            ? applyChildDrag(b, 220, 10, 5000, 5000, PARENT_POS, MOCK_BAND)
+            : b,
+        ),
+      );
+    });
+
+    const saved = readStorage();
+    expect(saved.find(b => b.id === 'c1')?.radial).toBeLessThanOrEqual(1);
+    expect(saved.find(b => b.id === 'c1')?.radial).toBeGreaterThanOrEqual(0);
+  });
+});
+
 // ─── Combined sequences ───────────────────────────────────────────────────────
 
 describe('combined add → rename → delete sequences', () => {
