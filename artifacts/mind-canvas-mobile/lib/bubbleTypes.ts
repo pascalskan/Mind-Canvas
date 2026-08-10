@@ -15,9 +15,31 @@ export interface BubbleData {
   scale?:   number;
 }
 
+/** Which client wrote a save — used only for prompt wording. */
+export type SavedBy = 'web' | 'mobile';
+
 export interface StoredState {
   version: number;
   bubbles: BubbleData[];
+  /** User-chosen canvas name, edited in Settings. */
+  name?: string;
+  /**
+   * Epoch ms of the last EXPLICIT "Save canvas". Absent on maps written
+   * before saves became explicit, which reads as "no save yet" — so an
+   * existing map never triggers a restore prompt until someone actually
+   * saves. This timestamp is the sole basis for deciding whether another
+   * device has newer work; it is never set by ordinary editing.
+   */
+  savedAt?: number;
+  /** Platform that performed that save, for "saved on the website" wording. */
+  savedBy?: SavedBy;
+}
+
+/** The save metadata carried alongside the bubbles, without the bubbles. */
+export interface SaveMeta {
+  name?: string;
+  savedAt?: number;
+  savedBy?: SavedBy;
 }
 
 export const STORAGE_KEY     = 'mind-canvas-bubbles';

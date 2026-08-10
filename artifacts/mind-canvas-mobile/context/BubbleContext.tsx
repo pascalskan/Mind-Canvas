@@ -4,13 +4,17 @@ import React, {
 import { Alert, Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
-import { BubbleData, MAX_DEPTH } from '@/lib/bubbleTypes';
+import { BubbleData, MAX_DEPTH, type SaveMeta } from '@/lib/bubbleTypes';
 import {
   buildInitialBubbles, ringRadius, sizeForDepth, ROOT_COLORS, PILLAR_COLORS,
-  resolveCollisions, relativeLayer,
-  LAYER_SIZES_OVERVIEW, LAYER_SIZES_FOCUSED,
+  resolveCollisions, relativeLayer, syncPositionsFromAngleRadial, canvasSignature,
+  LAYER_SIZES_OVERVIEW, LAYER_SIZES_FOCUSED, SCALE_MIN, SCALE_MAX,
 } from '@/lib/bubbleLayout';
-import { loadBubbles, parseBubbleJson, saveBubbles, fetchFromCloud, pushToCloud } from '@/lib/persistence';
+import {
+  loadStoredState, parseBubbleJson, saveBubbles, fetchFromCloud, pushToCloud,
+  type CloudSnapshot, type PushResult, type SaveFailure, type ImportedCanvas,
+} from '@/lib/persistence';
+import { STORAGE_VERSION } from '@/lib/bubbleTypes';
 
 // ── Context shape ──────────────────────────────────────────────────────────────
 
@@ -21,30 +25,63 @@ interface BubbleContextValue {
   editSelection: string | null;
   byId:          Record<string, BubbleData>;
   /**
-   * False when the most recent cloud PUT failed. Resets to true on the next
-   * successful PUT. Starts true so no spurious toast shows before the first save.
+   * False when the most recent "Save canvas" failed. Resets to true on the
+   * next successful save. Starts true so no spurious toast shows before the
+   * user has saved anything.
    */
   cloudSaveOk:   boolean;
 
+  /** User-chosen canvas name, edited in Settings. Persisted with each save. */
+  canvasName:    string;
+  setCanvasName: (name: string) => void;
+  /** True while a save is in flight, so the button can show progress. */
+  saving:        boolean;
+  /**
+   * Publishes this device's canvas to the shared map. The ONLY path to the
+   * cloud — ordinary editing is local-only. Resolves with a reason on failure.
+   */
+  saveCanvas:    () => Promise<PushResult>;
+  /** Why the last save failed, or null if the last one succeeded. */
+  saveError:     SaveFailure | null;
+  /** True when the canvas differs from the last successfully saved state. */
+  hasUnsavedChanges: boolean;
+  /** Metadata of the save this canvas corresponds to (for "last saved …"). */
+  savedMeta:     SaveMeta;
+
+  /**
+   * A newer save found on the server that this device has not seen, awaiting
+   * the user's choice. Null when there is nothing to offer.
+   */
+  pendingSave:        CloudSnapshot | null;
+  /** "Continue from recent save" — adopt the newer save. */
+  acceptPendingSave:  () => void;
+  /** "Continue from current point" — keep local work and stop offering this save. */
+  dismissPendingSave: () => void;
+
   setFocusedId:     (id: string | null) => void;
-  setEditMode:      (on: boolean) => void;
   setEditSelection: (id: string | null) => void;
+  /** Enters edit mode and snapshots the current tree so cancelEditMode can revert to it. */
+  enterEditMode:  () => void;
+  /** Reverts every mutation made since enterEditMode and exits edit mode — see M4 in the audit. */
+  cancelEditMode: () => void;
+  /** Commits the edit-mode session: exits edit mode and lets the normal cloud push resume. */
+  saveEditMode:   () => void;
 
   addBubble:            (label: string, parentId: string | null, opts?: { color?: string; scale?: number }) => void;
   deleteBubble:         (id: string) => void;
   renameBubble:         (id: string, label: string) => void;
   recolorBubble:        (id: string, color: string) => void;
   resizeBubble:         (id: string, scale: number) => void;
-  updateBubblePosition: (id: string, pos: { x: number; y: number }) => void;
+  updateBubblePosition: (id: string, pos: { x: number; y: number; angle?: number; radial?: number }) => void;
   /** Atomically update positions for many bubbles in a single render. */
-  batchUpdatePositions: (updates: { id: string; x: number; y: number }[]) => void;
-  /** Re-snap all grandchild pips to the opposite-from-grandparent position. */
-  snapGrandchildren: () => void;
+  batchUpdatePositions: (updates: { id: string; x: number; y: number; angle?: number; radial?: number }[]) => void;
+  /** Re-derives canonical x/y for every non-root bubble from its angle/radial. */
+  resyncPositions: () => void;
 
   exportMap: () => Promise<void>;
   importMap: () => Promise<void>;
-  /** Pull the server's canonical state and apply it immediately, overriding local data. */
-  forceSyncFromCloud: () => Promise<void>;
+  /** Resets the canvas to the starter map. Destructive; confirm before calling. */
+  clearCanvas: () => void;
 }
 
 const BubbleContext = createContext<BubbleContextValue | null>(null);
@@ -55,114 +92,20 @@ export function useBubbles() {
   return ctx;
 }
 
-// ── Grandchild position corrector (pure) ───────────────────────────────────────
-// Snaps layer-2 pips to the correct display-radius distance from their parent.
-// Called both on cloud load and whenever focusedId changes.
-function correctGrandchildPositions(
-  bubbles: BubbleData[],
-  focusedId: string | null,
-): BubbleData[] {
-  // Mutable lookup — updated after each pass so later passes use corrected coords.
-  const byIdLocal = Object.fromEntries(bubbles.map(b => [b.id, b]));
-  const corrected = new Map<string, { x: number; y: number }>();
-  const FAN_STEP  = Math.PI / 8; // 22.5° between pips
-
-  // ── Pass 1: Snap direct children of the focused bubble to the correct ring──
-  // Bubbles added while the user was NOT focused on their parent are placed
-  // using the wrong ring radius (pip-sized parent radius instead of focused
-  // display radius), so they appear inside the focused circle. Correct them
-  // by preserving their angle but snapping to the focused ring distance.
-  if (focusedId) {
-    const focused = byIdLocal[focusedId];
-    if (focused) {
-      const children = bubbles.filter(b => b.parentId === focusedId);
-      if (children.length > 0) {
-        const pr      = LAYER_SIZES_FOCUSED[0] / 2;
-        const cr      = LAYER_SIZES_FOCUSED[1] / 2;
-        const targetR = ringRadius(pr, cr, children.length);
-        for (const child of children) {
-          const dx   = child.x - focused.x;
-          const dy   = child.y - focused.y;
-          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-          if (Math.abs(dist - targetR) > 20) {
-            const angle = Math.atan2(dy, dx);
-            const fix   = { x: focused.x + Math.cos(angle) * targetR,
-                            y: focused.y + Math.sin(angle) * targetR };
-            corrected.set(child.id, fix);
-            // Update local lookup so Pass 2 uses corrected parent positions.
-            byIdLocal[child.id] = { ...byIdLocal[child.id], ...fix };
-          }
-        }
-      }
-    }
-  }
-
-  // ── Pass 2: Snap layer-2 grandchild pips to their parent's visual edge ─────
-  let grandchildren: BubbleData[];
-  let parentDisplayR: number;
-  let gcDisplayR: number;
-
-  if (focusedId) {
-    grandchildren = bubbles.filter(b => {
-      const p = byIdLocal[b.parentId ?? ''];
-      return !!p && p.parentId === focusedId;
-    });
-    parentDisplayR = LAYER_SIZES_FOCUSED[1] / 2;
-    gcDisplayR     = LAYER_SIZES_FOCUSED[2] / 2;
-  } else {
-    grandchildren = bubbles.filter(b => b.depth === 2);
-    parentDisplayR = LAYER_SIZES_OVERVIEW[1] / 2;
-    gcDisplayR     = LAYER_SIZES_OVERVIEW[2] / 2;
-  }
-
-  if (grandchildren.length) {
-    const byParent = new Map<string, BubbleData[]>();
-    for (const gc of grandchildren) {
-      const pid = gc.parentId ?? '';
-      if (!byParent.has(pid)) byParent.set(pid, []);
-      byParent.get(pid)!.push(gc);
-    }
-
-    for (const [pid, siblings] of byParent.entries()) {
-      const parent = byIdLocal[pid];
-      if (!parent) continue;
-      const targetR = ringRadius(parentDisplayR, gcDisplayR, siblings.length);
-
-      // Pips always fan out OPPOSITE from the grandparent so it's visually
-      // clear which parent they belong to.
-      const gp = byIdLocal[parent.parentId ?? ''];
-      const baseAngle = gp
-        ? Math.atan2(parent.y - gp.y, parent.x - gp.x)
-        : -Math.PI / 2;
-
-      const n = siblings.length;
-      siblings.forEach((gc, i) => {
-        const offset   = (i - (n - 1) / 2) * FAN_STEP;
-        const angle    = baseAngle + offset;
-        const targetX  = parent.x + Math.cos(angle) * targetR;
-        const targetY  = parent.y + Math.sin(angle) * targetR;
-
-        const dx = gc.x - parent.x;
-        const dy = gc.y - parent.y;
-        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        const curAngle = Math.atan2(dy, dx);
-        const angleDiff = Math.abs(((angle - curAngle + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
-
-        if (Math.abs(dist - targetR) > 15 || angleDiff > Math.PI / 9) {
-          corrected.set(gc.id, { x: targetX, y: targetY });
-        }
-      });
-    }
-  }
-
-  if (!corrected.size) return bubbles;
-  return bubbles.map(b => {
-    const u = corrected.get(b.id);
-    return u ? { ...b, ...u } : b;
-  });
-}
-
 // ── Provider ───────────────────────────────────────────────────────────────────
+//
+// Non-root position sync (H3 / M6): every non-root bubble's canonical x/y is
+// now derived from its angle/radial via syncPositionsFromAngleRadial
+// (lib/bubbleLayout.ts), which replaces the old grandchild-only,
+// fixed-22.5°-fan correctGrandchildPositions that used to live here. That
+// function existed because a grandchild added while unfocused was seeded
+// using the wrong ring radius and needed a one-off fix; it also had to re-run
+// on every focus change, which is exactly what fought a user's manual drag
+// (M6) — re-snapping pips back to a fixed fan position after any navigation.
+// angle/radial are focus-independent (a stored fraction reinterprets sensibly
+// at any layer size), so syncPositionsFromAngleRadial only needs to run when
+// mobile ingests bubbles it didn't compute itself: cloud bootstrap and the
+// cross-device poll merge, below. No per-focus-change effect is needed at all.
 
 const INITIAL = buildInitialBubbles();
 
@@ -174,6 +117,28 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
   const [loaded,        setLoaded]        = useState(false);
   const [cloudSaveOk,   setCloudSaveOk]   = useState(true);
 
+  const [canvasName, setCanvasName] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<SaveFailure | null>(null);
+
+  // Metadata of the save this canvas currently corresponds to, for the
+  // "last saved …" line in Settings.
+  const [savedMeta, setSavedMeta] = useState<SaveMeta>({});
+
+  // ── Unsaved-changes tracking ──────────────────────────────────────────────
+  // With saving now manual, nothing otherwise tells the user their work is
+  // unpublished — they could edit for an hour, kill the app and lose all of
+  // it with no signal at any point. A cheap content signature compared
+  // against the last saved state drives the dirty indicator.
+  const [baselineSignature, setBaselineSignature] = useState<string>(() =>
+    canvasSignature(INITIAL, undefined),
+  );
+
+  // True while a save is in flight, so the periodic check cannot offer us our
+  // OWN save back in the window between the PUT committing and
+  // lastSeenSavedAt advancing.
+  const savingRef = useRef(false);
+
   // Stable ref so callbacks don't go stale
   const focusedIdRef = useRef(focusedId);
   focusedIdRef.current = focusedId;
@@ -182,127 +147,228 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
   const bubblesRef = useRef<BubbleData[]>(INITIAL);
   bubblesRef.current = bubbles;
 
-  // Gates cloud pushes — stays false until the initial cloud fetch resolves,
-  // preventing the local/demo bubbles from overwriting the user's cloud data.
-  const cloudSyncedRef = useRef(false);
+  // Captured by enterEditMode, consumed by cancelEditMode — see M4 in the
+  // audit. Mirrors web's preEditBubbles (MindCanvas.tsx), which the mobile
+  // context never had at all: Cancel and Done were identical, so every edit
+  // was immediate and irreversible.
+  const preEditBubblesRef = useRef<BubbleData[] | null>(null);
 
-  // Set to true by any user-initiated mutation that fires BEFORE the cloud
-  // bootstrap GET resolves. When set, we skip the cloud overwrite and push the
-  // user's local state up instead so no edits are lost.
-  const editedBeforeCloudRef = useRef(false);
-
-  // Monotonically increasing counter — each PUT captures the generation at
-  // dispatch time and only updates cloudSaveOk if it is still the latest.
-  const saveGenRef = useRef(0);
-
-  // Load persisted data on mount
-  useEffect(() => {
-    loadBubbles(INITIAL).then(local => {
-      setBubbles(local);
-      setLoaded(true);
-      fetchFromCloud()
-        .then(cloud => {
-          if (!cloud) return;
-
-          // If the user already made edits during the fetch window, their data
-          // is more recent than what we got back — keep it and push it up once
-          // the gate opens in .finally() below.
-          if (editedBeforeCloudRef.current) return;
-
-          // 1. Push overlapping bubbles apart (web positions use smaller radii)
-          const bid2 = Object.fromEntries(cloud.map(b => [b.id, b]));
-          const resolved = resolveCollisions(cloud, null, bid2, null, 6);
-          const deduped = Object.keys(resolved).length > 0
-            ? cloud.map(b => resolved[b.id] ? { ...b, ...resolved[b.id] } : b)
-            : cloud;
-          // 2. Snap grandchild pips to their parent's visual edge
-          setBubbles(correctGrandchildPositions(deduped, null));
-        })
-        .finally(() => {
-          // Allow cloud pushes only after we've had a chance to pull first.
-          // If the user edited before cloud resolved, their state is already in
-          // bubblesRef — the save effect will push it on the next render.
-          cloudSyncedRef.current = true;
-        });
-    });
+  const enterEditMode = useCallback(() => {
+    preEditBubblesRef.current = bubblesRef.current.map(b => ({ ...b }));
+    setEditMode(true);
   }, []);
 
-  // ── Grandchild position correction ─────────────────────────────────────────
-  // Snap pips to their parent's visual edge whenever the focused view changes.
-  useEffect(() => {
-    if (!loaded) return;
-    setBubbles(prev => correctGrandchildPositions(prev, focusedId));
-  }, [focusedId, loaded]);
+  const cancelEditMode = useCallback(() => {
+    if (preEditBubblesRef.current) {
+      setBubbles(preEditBubblesRef.current);
+    }
+    preEditBubblesRef.current = null;
+    setEditMode(false);
+    setEditSelection(null);
+  }, []);
 
-  // Mirrors cloudSaveOk state as a ref so the polling closure stays current.
-  const cloudSaveOkRef = useRef(true);
-  cloudSaveOkRef.current = cloudSaveOk;
+  const saveEditMode = useCallback(() => {
+    preEditBubblesRef.current = null;
+    setEditMode(false);
+    setEditSelection(null);
+  }, []);
 
-  // Tracks the timestamp of the most recent local write so the poll can skip
-  // applying remote state when the user has touched the map very recently.
-  const lastLocalWriteRef = useRef(0);
+  // ── Save state ─────────────────────────────────────────────────────────────
+  // The savedAt of the cloud save this device is working from. Advanced when
+  // we save, when we accept someone else's save, and when we dismiss one —
+  // dismissing marks it seen so the same save never nags twice.
+  const lastSeenSavedAtRef = useRef(0);
 
-  // ── Cross-device sync polling ────────────────────────────────────────────
-  // Every 30 s fetch the server's canonical state. If it differs from what we
-  // have locally (another device made changes) AND all our own saves are
-  // confirmed committed, apply the remote state so both platforms stay in sync.
-  useEffect(() => {
-    const timer = setInterval(async () => {
-      if (!cloudSyncedRef.current) return;   // still bootstrapping
-      if (!cloudSaveOkRef.current) return;   // local edits not yet committed
-      // Skip if the user wrote within the last 5 s to avoid disrupting active drags.
-      if (Date.now() - lastLocalWriteRef.current < 5_000) return;
-      // Capture write timestamp before the async fetch so we can detect
-      // a drag that starts while the request is in flight.
-      const writeSnapshot = lastLocalWriteRef.current;
-      const cloud = await fetchFromCloud();
-      if (!cloud) return;
-      // Re-check: a local write may have occurred during the in-flight request.
-      if (lastLocalWriteRef.current !== writeSnapshot) return;
-      const cur = bubblesRef.current;
-      // Structural fingerprint: detects adds, deletes, renames, recolors.
-      const structSig = (bs: BubbleData[]) =>
-        bs.map(b => `${b.id}~${b.label}~${b.color}`).sort().join('|');
-      // Full fingerprint: integer-rounded x/y detects any position change from another device.
-      const fullSig = (bs: BubbleData[]) =>
-        bs.map(b => `${b.id}~${b.label}~${b.color}~${Math.round(b.x)}~${Math.round(b.y)}`).sort().join('|');
-      if (fullSig(cloud) === fullSig(cur)) return;
-      if (structSig(cloud) === structSig(cur)) {
-        // Position-only change: merge x/y smoothly without replacing the full array.
-        const cloudById = Object.fromEntries(cloud.map(b => [b.id, b]));
-        setBubbles(prev => prev.map(b => {
-          const cb = cloudById[b.id];
-          return cb ? { ...b, x: cb.x, y: cb.y } : b;
-        }));
-      } else {
-        // Structural change (add/delete/rename/recolor): full replace.
-        setBubbles(cloud);
+  // `loaded` as a ref, for the interval closure created once at mount.
+  const loadedRef = useRef(false);
+  loadedRef.current = loaded;
+
+  // A newer save found on the server, waiting on the user's decision. Held as
+  // both state (to render the prompt) and a ref (so the interval closure can
+  // see it without being re-created).
+  const [pendingSave, setPendingSaveState] = useState<CloudSnapshot | null>(null);
+  const pendingSaveRef = useRef<CloudSnapshot | null>(null);
+  const setPendingSave = useCallback((snap: CloudSnapshot | null) => {
+    pendingSaveRef.current = snap;
+    setPendingSaveState(snap);
+  }, []);
+
+  /**
+   * Adopt a cloud map wholesale. Runs the same two normalisation passes every
+   * cloud ingest has always needed: separate overlaps (the web lays bubbles
+   * out with different radii), then derive canonical x/y from angle/radial,
+   * since a web-authored child carries its position there rather than in x/y.
+   */
+  const applyCloudSnapshot = useCallback((cloud: CloudSnapshot) => {
+    const bid = Object.fromEntries(cloud.bubbles.map(b => [b.id, b]));
+    const resolved = resolveCollisions(cloud.bubbles, null, bid, null, 6);
+    const deduped = Object.keys(resolved).length > 0
+      ? cloud.bubbles.map(b => resolved[b.id] ? { ...b, ...resolved[b.id] } : b)
+      : cloud.bubbles;
+    const normalised = syncPositionsFromAngleRadial(deduped);
+    setBubbles(normalised);
+    // Adopt the incoming name unconditionally, including when it is absent.
+    // Keeping the old local name for an unnamed save left the canvas
+    // mislabelled with a name belonging to different content.
+    setCanvasName(cloud.meta.name ?? '');
+    // We now hold exactly what was saved, so this is a clean baseline. Note
+    // the signature is taken from the NORMALISED bubbles, since that is what
+    // actually sits in state — signing the raw payload would read as dirty
+    // the moment positions were re-derived.
+    setBaselineSignature(canvasSignature(normalised, cloud.meta.name));
+  }, []);
+
+  /** "Continue from recent save" — take the other device's work. */
+  const acceptPendingSave = useCallback(() => {
+    const snap = pendingSaveRef.current;
+    if (!snap) return;
+    applyCloudSnapshot(snap);
+    lastSeenSavedAtRef.current = snap.meta.savedAt ?? Date.now();
+    setSavedMeta(snap.meta);
+    setPendingSave(null);
+  }, [applyCloudSnapshot, setPendingSave]);
+
+  /**
+   * "Continue from current point" — keep working locally. Marking the save as
+   * seen is the whole point: without it the 30 s check would re-offer the same
+   * save every half minute for as long as the app stayed open.
+   */
+  const dismissPendingSave = useCallback(() => {
+    const snap = pendingSaveRef.current;
+    if (snap) lastSeenSavedAtRef.current = snap.meta.savedAt ?? Date.now();
+    setPendingSave(null);
+  }, [setPendingSave]);
+
+  /**
+   * "Save canvas" — the only path from this device to the shared cloud map.
+   * Stamps savedAt/savedBy so the other platform can tell there is newer work
+   * and who made it, and advances our own lastSeen so our save never comes
+   * back to us as a prompt.
+   */
+  const saveCanvas = useCallback(async (): Promise<PushResult> => {
+    setSaving(true);
+    savingRef.current = true;
+    const savedAt = Date.now();
+    const meta = { name: canvasName.trim() || undefined, savedAt, savedBy: 'mobile' as const };
+    const result = await pushToCloud(bubblesRef.current, meta);
+
+    if (result.ok) {
+      // Mirror the new baseline into the local draft FIRST. Advancing
+      // lastSeenSavedAt without a durable local record meant that if this
+      // write failed, a relaunch would read the older stored savedAt and the
+      // device would then prompt about its own save. Only move the baseline
+      // once it is actually recorded.
+      const localOk = await saveBubbles(bubblesRef.current, meta);
+      if (localOk) {
+        lastSeenSavedAtRef.current = savedAt;
+        setSavedMeta(meta);
+        setBaselineSignature(canvasSignature(bubblesRef.current, meta.name));
       }
-    }, 30_000);
-    return () => clearInterval(timer);
+    }
+
+    setCloudSaveOk(result.ok);
+    setSaveError(result.ok ? null : result.reason);
+    setSaving(false);
+    savingRef.current = false;
+    return result;
+  }, [canvasName]);
+
+  // ── Startup ────────────────────────────────────────────────────────────────
+  // Load the local draft, then look at the cloud. A fresh install with nothing
+  // stored silently adopts the cloud map. Otherwise we never overwrite local
+  // work: if the cloud holds a save this device has not seen, we only RAISE A
+  // PROMPT and let the user choose. Nothing is applied behind their back.
+  useEffect(() => {
+    loadStoredState(INITIAL).then(({ bubbles: local, meta, hadStored }) => {
+      setBubbles(local);
+      setCanvasName(meta.name ?? '');
+      lastSeenSavedAtRef.current = meta.savedAt ?? 0;
+      setSavedMeta(meta);
+      // A restored draft that descends from a save is only "unsaved" once the
+      // user edits it again — coming back to saved work must not read dirty.
+      setBaselineSignature(canvasSignature(local, meta.name));
+      setLoaded(true);
+
+      fetchFromCloud().then(cloud => {
+        if (!cloud) return;
+        const cloudSavedAt = cloud.meta.savedAt ?? 0;
+
+        // Nothing stored locally — this device has no work to protect, so
+        // just adopt the cloud map rather than prompting about it.
+        if (!hadStored) {
+          applyCloudSnapshot(cloud);
+          lastSeenSavedAtRef.current = cloudSavedAt;
+          setSavedMeta(cloud.meta);
+          return;
+        }
+
+        // A save we have already seen (or our own) — nothing to offer.
+        if (cloudSavedAt <= lastSeenSavedAtRef.current) return;
+        setPendingSave(cloud);
+      });
+    });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Save on every change (after initial load + cloud sync)
+  // Mirrors editMode so the polling closure (created once, below, with an
+  // empty dependency array) always reads the latest value rather than
+  // whatever it was at mount.
+  const editModeRef = useRef(editMode);
+  editModeRef.current = editMode;
+
+  // ── Checking for a newer save ────────────────────────────────────────────
+  // Every 30 s, ask the server whether a NEWER EXPLICIT SAVE exists than the
+  // one this device is working from. This only ever raises a prompt — it
+  // never applies anything itself. Auto-applying remote state was the old
+  // behaviour and it meant the canvas could rearrange itself under you with
+  // no warning and no way back.
+  //
+  // Note this compares savedAt, not map contents: ordinary editing no longer
+  // touches the cloud at all, so the only thing that can move savedAt forward
+  // is somebody deliberately pressing "Save canvas".
+  useEffect(() => {
+    const check = async () => {
+      if (!loadedRef.current) return;        // still bootstrapping
+      if (editModeRef.current) return;       // don't interrupt an edit session
+      if (pendingSaveRef.current) return;    // a prompt is already showing
+      if (savingRef.current) return;         // our own save is mid-flight
+      const cloud = await fetchFromCloud();
+      if (!cloud) return;
+      // Re-check everything that could have changed during the request. The
+      // saving check matters most: without it, a poll resolving between our
+      // PUT committing and lastSeenSavedAt advancing offers the user their
+      // own save back as if another device had made it.
+      if (editModeRef.current || pendingSaveRef.current || savingRef.current) return;
+      const cloudSavedAt = cloud.meta.savedAt ?? 0;
+      if (cloudSavedAt <= lastSeenSavedAtRef.current) return;
+      setPendingSave(cloud);
+    };
+    const timer = setInterval(check, 30_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // ── Local draft autosave ─────────────────────────────────────────────────
+  // Runs on every change so nothing is lost if the app is killed — but it is
+  // LOCAL ONLY. Reaching the cloud now requires an explicit "Save canvas";
+  // see saveCanvas below.
   useEffect(() => {
     if (!loaded) return;
-    // Record write time so the poll guard knows the user was recently active.
-    lastLocalWriteRef.current = Date.now();
-    saveBubbles(bubbles).then(ok => {
-      if (!ok) console.warn('[MindCanvas] AsyncStorage write failed — data is still safe in cloud.');
+    saveBubbles(bubbles, {
+      name: canvasName || undefined,
+      savedAt: lastSeenSavedAtRef.current || undefined,
+    }).then(ok => {
+      if (!ok) console.warn('[MindCanvas] AsyncStorage write failed — this draft may not survive a restart.');
     });
-    if (cloudSyncedRef.current) {
-      const gen = ++saveGenRef.current;
-      pushToCloud(bubbles).then(ok => {
-        // Only apply the result if no newer PUT has been dispatched since.
-        if (saveGenRef.current === gen) setCloudSaveOk(ok);
-      });
-    }
-  }, [bubbles, loaded]);
+  }, [bubbles, canvasName, loaded]);
 
   const byId = useMemo(
     () => Object.fromEntries(bubbles.map(b => [b.id, b])),
     [bubbles],
+  );
+
+  const hasUnsavedChanges = useMemo(
+    () => loaded && canvasSignature(bubbles, canvasName || undefined) !== baselineSignature,
+    [loaded, bubbles, canvasName, baselineSignature],
   );
 
   // ── Mutations ────────────────────────────────────────────────────────────────
@@ -312,7 +378,7 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
     parentId: string | null,
     opts?: { color?: string; scale?: number },
   ) => {
-    editedBeforeCloudRef.current = true;
+
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
     setBubbles(prev => {
@@ -393,7 +459,7 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const deleteBubble = useCallback((id: string) => {
-    editedBeforeCloudRef.current = true;
+
     setBubbles(prev => {
       const toDelete = new Set<string>([id]);
       let changed = true;
@@ -414,40 +480,52 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
   const renameBubble = useCallback((id: string, label: string) => {
     const trimmed = label.trim();
     if (!trimmed) return;
-    editedBeforeCloudRef.current = true;
+
     setBubbles(prev => prev.map(b => b.id === id ? { ...b, label: trimmed } : b));
   }, []);
 
   const recolorBubble = useCallback((id: string, color: string) => {
-    editedBeforeCloudRef.current = true;
+
     setBubbles(prev => prev.map(b => b.id === id ? { ...b, color } : b));
   }, []);
 
   const resizeBubble = useCallback((id: string, scale: number) => {
-    editedBeforeCloudRef.current = true;
-    setBubbles(prev => prev.map(b => b.id === id ? { ...b, scale } : b));
+
+    // Matches web's resizeBubble clamp. Values only ever come from
+    // SCALE_OPTIONS chips today, but a synced value from another client
+    // shouldn't be able to push this out of the range the UI can represent.
+    const next = Math.min(Math.max(scale, SCALE_MIN), SCALE_MAX);
+    setBubbles(prev => prev.map(b => b.id === id ? { ...b, scale: next } : b));
   }, []);
 
-  const updateBubblePosition = useCallback((id: string, pos: { x: number; y: number }) => {
-    editedBeforeCloudRef.current = true;
-    setBubbles(prev => prev.map(b => b.id === id ? { ...b, x: pos.x, y: pos.y } : b));
+  const updateBubblePosition = useCallback((id: string, pos: { x: number; y: number; angle?: number; radial?: number }) => {
+
+    setBubbles(prev => prev.map(b => b.id === id
+      ? { ...b, x: pos.x, y: pos.y, ...(pos.angle !== undefined ? { angle: pos.angle } : {}), ...(pos.radial !== undefined ? { radial: pos.radial } : {}) }
+      : b));
   }, []);
 
-  const batchUpdatePositions = useCallback((updates: { id: string; x: number; y: number }[]) => {
+  const batchUpdatePositions = useCallback((updates: { id: string; x: number; y: number; angle?: number; radial?: number }[]) => {
     if (!updates.length) return;
-    editedBeforeCloudRef.current = true;
+
     const map = new Map(updates.map(u => [u.id, u]));
     setBubbles(prev => prev.map(b => {
       const u = map.get(b.id);
-      return u ? { ...b, x: u.x, y: u.y } : b;
+      if (!u) return b;
+      return { ...b, x: u.x, y: u.y, ...(u.angle !== undefined ? { angle: u.angle } : {}), ...(u.radial !== undefined ? { radial: u.radial } : {}) };
     }));
   }, []);
 
   // ── Export / Import ───────────────────────────────────────────────────────────
 
   const exportMap = useCallback(async () => {
-    const json = JSON.stringify({ version: 2, bubbles }, null, 2);
-    const filename = `mind-canvas-${new Date().toISOString().slice(0, 10)}.json`;
+    const name = canvasName.trim() || undefined;
+    // The name goes IN the file so an import can restore it, and INTO the
+    // filename so a folder of exports is readable at a glance — matching the
+    // web export byte for byte, since either platform may open either file.
+    const json = JSON.stringify({ version: STORAGE_VERSION, bubbles, name }, null, 2);
+    const slug = name?.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    const filename = `${slug || 'mind-canvas'}-${new Date().toISOString().slice(0, 10)}.json`;
 
     if (Platform.OS === 'web') {
       const blob = new Blob([json], { type: 'application/json' });
@@ -465,7 +543,31 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
         Alert.alert('Export failed', 'Could not share the file.');
       }
     }
-  }, [bubbles]);
+  }, [bubbles, canvasName]);
+
+  /**
+   * Shared confirm-and-apply step for both import routes (the web file input
+   * and the native document picker). They previously carried duplicate copies
+   * of this, which is exactly how the two drift apart.
+   */
+  const confirmImport = useCallback((imported: ImportedCanvas) => {
+    const count = imported.bubbles.length;
+    Alert.alert(
+      'Import map',
+      (imported.name ? `“${imported.name}” — r` : 'R')
+        + `eplace the current map with ${count} bubble${count === 1 ? '' : 's'}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Replace', style: 'destructive', onPress: () => {
+          setBubbles(imported.bubbles);
+          // Adopt the file's name, clearing the old one when it has none —
+          // otherwise imported content keeps the title of the map it replaced.
+          setCanvasName(imported.name ?? '');
+          setFocusedId(null); setEditSelection(null); setEditMode(false);
+        }},
+      ],
+    );
+  }, []);
 
   const importMap = useCallback(async () => {
     if (Platform.OS === 'web') {
@@ -483,13 +585,7 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
         }
         const imported = parseBubbleJson(text);
         if (!imported) { Alert.alert('Invalid file', 'Not a valid Mind Canvas export.'); return; }
-        Alert.alert('Import map', `Replace the current map with ${imported.length} bubbles?`, [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Replace', style: 'destructive', onPress: () => {
-            editedBeforeCloudRef.current = true;
-            setBubbles(imported); setFocusedId(null); setEditSelection(null); setEditMode(false);
-          }},
-        ]);
+        confirmImport(imported);
       };
       input.click();
     } else {
@@ -504,46 +600,42 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
         const text = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.UTF8 });
         const imported = parseBubbleJson(text);
         if (!imported) { Alert.alert('Invalid file', 'Not a valid Mind Canvas export.'); return; }
-        Alert.alert('Import map', `Replace the current map with ${imported.length} bubbles?`, [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Replace', style: 'destructive', onPress: () => {
-            editedBeforeCloudRef.current = true;
-            setBubbles(imported); setFocusedId(null); setEditSelection(null); setEditMode(false);
-          }},
-        ]);
+        confirmImport(imported);
       } catch {
         Alert.alert('Import failed', 'Could not read the file.');
       }
     }
   }, []);
 
-  const snapGrandchildren = useCallback(() => {
-    setBubbles(prev => correctGrandchildPositions(prev, focusedId));
-  }, [focusedId]);
+  const resyncPositions = useCallback(() => {
+    setBubbles(prev => syncPositionsFromAngleRadial(prev));
+  }, []);
 
-  const forceSyncFromCloud = useCallback(async () => {
-    const cloud = await fetchFromCloud();
-    if (!cloud) {
-      Alert.alert('Sync failed', 'Could not reach the server. Check your connection and try again.');
-      return;
-    }
-    // Apply cloud data, correct positions, and reset save flag so the next
-    // push doesn't overwrite the just-pulled state with stale local data.
-    editedBeforeCloudRef.current = false;
-    setBubbles(correctGrandchildPositions(cloud, null));
+  const clearCanvas = useCallback(() => {
+    setBubbles(buildInitialBubbles());
+    setFocusedId(null);
+    setEditSelection(null);
+    setEditMode(false);
+    setCanvasName('');
   }, []);
 
   const value = useMemo<BubbleContextValue>(() => ({
     bubbles, focusedId, editMode, editSelection, byId, cloudSaveOk,
-    setFocusedId, setEditMode, setEditSelection,
+    canvasName, setCanvasName, saving, saveCanvas, saveError,
+    hasUnsavedChanges, savedMeta,
+    pendingSave, acceptPendingSave, dismissPendingSave,
+    setFocusedId, setEditSelection, enterEditMode, cancelEditMode, saveEditMode,
     addBubble, deleteBubble, renameBubble, recolorBubble, resizeBubble,
-    updateBubblePosition, batchUpdatePositions, snapGrandchildren,
-    exportMap, importMap, forceSyncFromCloud,
+    updateBubblePosition, batchUpdatePositions, resyncPositions,
+    exportMap, importMap, clearCanvas,
   }), [
     bubbles, focusedId, editMode, editSelection, byId, cloudSaveOk,
+    canvasName, saving, saveCanvas, saveError, hasUnsavedChanges, savedMeta,
+    pendingSave, acceptPendingSave, dismissPendingSave,
+    enterEditMode, cancelEditMode, saveEditMode,
     addBubble, deleteBubble, renameBubble, recolorBubble, resizeBubble,
-    updateBubblePosition, batchUpdatePositions, snapGrandchildren,
-    exportMap, importMap, forceSyncFromCloud,
+    updateBubblePosition, batchUpdatePositions, resyncPositions,
+    exportMap, importMap, clearCanvas,
   ]);
 
   return <BubbleContext.Provider value={value}>{children}</BubbleContext.Provider>;

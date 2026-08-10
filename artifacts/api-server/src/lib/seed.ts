@@ -25,12 +25,6 @@ const INITIAL_MAP = {
     { id: "init17", depth: 2, parentId: "init15", label: "Blog", color: "#5ebaab", x: -340.5634558241096, y: -183.9857482113601 },
     { id: "init18", depth: 1, parentId: "init14", label: "Active", color: "#5ebaab", x: -542.4126467323575, y: 81.58132143398824 },
     { id: "init19", depth: 1, parentId: "init14", label: "Done", color: "#5ebaab", x: -394.30403002721187, y: -11.632613456071159 },
-    { id: "msk15ynxo3pfw", depth: 1, parentId: "init0", label: "Test sublayer", x: 103.75536213102481, y: -262.5075855096565, color: "#8270db" },
-    { id: "msk17qha0wncw", depth: 2, parentId: "msk15ynxo3pfw", label: "Sublayer", x: 348.78398579026924, y: -233.6237390464989, color: "#8270db" },
-    { id: "msk1afzukw53i", depth: 1, parentId: "init8", label: "Tets", x: -6.492498778544052, y: 384.70671008674395, color: "#db7094" },
-    { id: "msk221aurpacq", depth: 3, parentId: "msk17qha0wncw", label: "Test sublayer", x: 398.86900021182817, y: -246.39446553396962, color: "#8270db" },
-    { id: "msk2272bi4iwl", depth: 4, parentId: "msk221aurpacq", label: "Test sublayer", x: 426.15155408308283, y: -192.95038628248372, color: "#8270db" },
-    { id: "msk22cjia0uf5", depth: 5, parentId: "msk2272bi4iwl", label: "Test sublayer", x: 511.51093149491, y: -28.8462352418235, color: "#8270db" },
   ],
 };
 

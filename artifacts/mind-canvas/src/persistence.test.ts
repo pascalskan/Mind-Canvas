@@ -16,6 +16,7 @@ import {
   clearBubbles,
   exportBubbles,
   importBubbles,
+  isValidBubble,
   STORAGE_KEY,
   STORAGE_VERSION,
   type BubbleData,
@@ -225,22 +226,55 @@ function makeImportFile(state: StoredState): File {
 describe('importBubbles — valid files', () => {
   it('resolves with the bubble array for a current-version export', async () => {
     const result = await importBubbles(makeImportFile({ version: STORAGE_VERSION, bubbles: SAMPLE_BUBBLES }));
-    expect(result).toEqual(SAMPLE_BUBBLES);
+    expect(result?.bubbles).toEqual(SAMPLE_BUBBLES);
   });
 
   it('accepts a version-1 file (legacy export)', async () => {
     const result = await importBubbles(makeImportFile({ version: 1, bubbles: SAMPLE_BUBBLES }));
-    expect(result).toEqual(SAMPLE_BUBBLES);
+    expect(result?.bubbles).toEqual(SAMPLE_BUBBLES);
   });
 
   it('preserves all optional fields (angle, radial, scale, parentId)', async () => {
     const result = await importBubbles(makeImportFile({ version: STORAGE_VERSION, bubbles: SAMPLE_BUBBLES }));
-    const b1 = result?.find(b => b.id === 'b1');
+    const b1 = result?.bubbles.find(b => b.id === 'b1');
     expect(b1?.parentId).toBe('b0');
     expect(b1?.angle).toBe(0);
     expect(b1?.radial).toBe(1);
-    const b2 = result?.find(b => b.id === 'b2');
+    const b2 = result?.bubbles.find(b => b.id === 'b2');
     expect(b2?.scale).toBe(1.2);
+  });
+
+  // The canvas name is half of the export feature: a file that carries a name
+  // but imports without it silently renames the user's map.
+  it('returns the canvas name stored in the file', async () => {
+    const result = await importBubbles(makeImportFile({
+      version: STORAGE_VERSION, bubbles: SAMPLE_BUBBLES, name: 'Product strategy',
+    }));
+    expect(result?.name).toBe('Product strategy');
+  });
+
+  it('returns undefined for the name when the file has none, so the caller can clear it', async () => {
+    const result = await importBubbles(makeImportFile({ version: STORAGE_VERSION, bubbles: SAMPLE_BUBBLES }));
+    expect(result?.name).toBeUndefined();
+  });
+
+  it('ignores a non-string name rather than adopting it', async () => {
+    const result = await importBubbles(makeImportFile({
+      version: STORAGE_VERSION, bubbles: SAMPLE_BUBBLES, name: 42 as unknown as string,
+    }));
+    expect(result?.bubbles).toEqual(SAMPLE_BUBBLES);
+    expect(result?.name).toBeUndefined();
+  });
+
+  // savedAt/savedBy must NOT come back: adopting a file's timestamp would make
+  // this device believe it had already seen a cloud save it has never seen,
+  // suppressing the "new save available" prompt for real remote work.
+  it('does not surface savedAt or savedBy from the file', async () => {
+    const result = await importBubbles(makeImportFile({
+      version: STORAGE_VERSION, bubbles: SAMPLE_BUBBLES, savedAt: 1_700_000_000_000, savedBy: 'mobile',
+    }));
+    expect(result).not.toHaveProperty('savedAt');
+    expect(result).not.toHaveProperty('savedBy');
   });
 });
 
@@ -299,9 +333,70 @@ describe('importBubbles — malformed files', () => {
     const result = await importBubbles(makeImportFile({ version: STORAGE_VERSION, bubbles: cyclic }));
     expect(result).toBeNull();
   });
+
+  // A NaN cannot survive a File-based import test: JSON.stringify turns it
+  // into `null`, so this only proves null coordinates are rejected — which is
+  // still the exact shape a poisoned map arrives in over the wire, and is why
+  // one bad device silently kills sync for every device.
+  it('returns null when a coordinate arrived as null (how a NaN looks over the wire)', async () => {
+    const overWire = [{ id: 'b0', depth: 0, label: 'Bad', x: null, y: 0, color: '#aaa' }];
+    const result = await importBubbles(makeImportFile({ version: STORAGE_VERSION, bubbles: overWire as unknown as BubbleData[] }));
+    expect(result).toBeNull();
+  });
+});
+
+// isValidBubble is unit-tested directly rather than through importBubbles:
+// a live NaN never survives the JSON boundary an import goes through, so an
+// import-level test cannot distinguish `typeof x === 'number'` from
+// `Number.isFinite(x)`. In-memory is where a real NaN actually appears —
+// produced by the app's own arithmetic (a poisoned camera scale divides into
+// drag positions) — and that is precisely the value that must be rejected
+// before it is written to storage or pushed to the shared cloud map.
+describe('isValidBubble — non-finite numbers (in-memory, no JSON boundary)', () => {
+  const base: BubbleData = { id: 'b0', depth: 0, label: 'Base', x: 0, y: 0, color: '#aaa' };
+
+  it('accepts a well-formed bubble', () => {
+    expect(isValidBubble(base)).toBe(true);
+  });
+
+  it('accepts legitimately-present optional numeric fields', () => {
+    expect(isValidBubble({ ...base, parentId: 'p', angle: 0, radial: 0.5, scale: 1.2 })).toBe(true);
+  });
+
+  it.each([
+    ['x is NaN',       { x: NaN }],
+    ['y is NaN',       { y: NaN }],
+    ['x is Infinity',  { x: Infinity }],
+    ['y is -Infinity', { y: -Infinity }],
+    ['depth is NaN',   { depth: NaN }],
+    ['scale is NaN',   { scale: NaN }],
+    ['angle is NaN',   { angle: NaN }],
+    ['radial is NaN',  { radial: NaN }],
+  ])('rejects when %s', (_label, patch) => {
+    expect(isValidBubble({ ...base, ...patch })).toBe(false);
+  });
 });
 
 describe('exportBubbles → importBubbles round-trip', () => {
+  it('a file exported with a name re-imports with both the bubbles and the name', async () => {
+    let capturedBlob: Blob | undefined;
+    const createObjectURL = vi.fn((b: Blob) => { capturedBlob = b; return 'blob:named'; });
+    vi.stubGlobal('URL', { createObjectURL, revokeObjectURL: vi.fn() });
+    vi.spyOn(document.body, 'appendChild').mockImplementation(() => document.body);
+    vi.spyOn(document.body, 'removeChild').mockImplementation(() => document.body);
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    exportBubbles(SAMPLE_BUBBLES, { name: 'Q3 planning', savedAt: 123, savedBy: 'web' });
+
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+
+    const file = new File([await capturedBlob!.text()], 'named.json', { type: 'application/json' });
+    const result = await importBubbles(file);
+    expect(result?.bubbles).toEqual(SAMPLE_BUBBLES);
+    expect(result?.name).toBe('Q3 planning');
+  });
+
   it('a file exported via exportBubbles can be re-imported to recover the exact bubble array', async () => {
     // Capture the Blob written by exportBubbles.
     let capturedBlob: Blob | undefined;
@@ -322,6 +417,6 @@ describe('exportBubbles → importBubbles round-trip', () => {
     const text = await capturedBlob!.text();
     const file = new File([text], 'round-trip.json', { type: 'application/json' });
     const result = await importBubbles(file);
-    expect(result).toEqual(SAMPLE_BUBBLES);
+    expect(result?.bubbles).toEqual(SAMPLE_BUBBLES);
   });
 });
