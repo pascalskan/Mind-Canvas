@@ -20,7 +20,9 @@ import {
   getSize,
   ringRadius,
 } from '../lib/bubbleLayout';
-import { applyRootDrag, applyChildDrag } from '../lib/dragHelpers';
+import { applyRootDrag, applyChildDrag, shouldWriteBubbleMotionValues, isBackgroundTap, descendantsOf as descendantsOfPure } from '../lib/dragHelpers';
+import SettingsPanel from './SettingsPanel';
+import SaveAvailablePrompt from './SaveAvailablePrompt';
 import { useBubbleState } from '../hooks/useBubbleState';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -899,8 +901,13 @@ function AddPanel({ bubbles, onAdd, onClose, initialParentPath = [], quickCreate
         </p>
 
         {/* text-base (16px) prevents iOS from zooming the viewport when this input is focused */}
+        {/* Escape must go through cancel(), not the raw onClose prop — in
+            quickCreate mode onClose only hides the panel, leaving the
+            already-created placeholder bubble in state forever. cancel()
+            also calls onQuickCancel to delete it, matching the Cancel button
+            and a background click. */}
         <input placeholder="Label…" value={label} onChange={e => setLabel(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') onClose(); }}
+          onKeyDown={e => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') cancel(); }}
           className="w-full bg-transparent border-b border-gray-200 text-gray-700 font-light text-base outline-none py-2 mb-4 placeholder-gray-300"/>
 
         {/* Parent selector (not shown in quickCreate mode — parent is already fixed) */}
@@ -1007,6 +1014,9 @@ interface DragOrigin {
 // ─── Main canvas ──────────────────────────────────────────────────────────────
 
 export default function MindCanvas() {
+  // Declared before useBubbleState so its current value can hold back the
+  // newer-save prompt for the duration of an edit session.
+  const [editMode, setEditMode] = useState(false);
   const {
     bubbles,
     setBubbles,
@@ -1016,18 +1026,25 @@ export default function MindCanvas() {
     addBubble,
     deleteBubblesById,
     renameBubble,
-    forceSyncFromCloud,
-  } = useBubbleState(INITIAL_BUBBLES);
+    canvasName,
+    setCanvasName,
+    saving,
+    saveCanvas,
+    saveError,
+    hasUnsavedChanges,
+    savedMeta,
+    pendingSave,
+    acceptPendingSave,
+    dismissPendingSave,
+  } = useBubbleState(INITIAL_BUBBLES, editMode);
   const [focusedId,      setFocusedId]      = useState<string | null>(null);
   const [editingId,      setEditingId]      = useState<string | null>(null);
   const [editValue,      setEditValue]      = useState('');
-  const [hoveredBubble,  setHoveredBubble]  = useState<string | null>(null);
   const [showAddPanel,   setShowAddPanel]   = useState(false);
-  const [editMode,       setEditMode]       = useState(false);
+  const [showSettings,   setShowSettings]   = useState(false);
   const [preEditBubbles, setPreEditBubbles] = useState<BubbleData[] | null>(null);
   const [editSelection,  setEditSelection]  = useState<string | null>(null);
   const [quickCreate,    setQuickCreate]    = useState<{ id: string; parentId: string; anchor: { x: number; y: number } } | null>(null);
-  const [showColorPicker, setShowColorPicker] = useState(false);
   const [saveFailedToast,  setSaveFailedToast]  = useState(false);
   const [storageNearLimit, setStorageNearLimit] = useState(false);
   // null  = not dismissed this session (banner shows when storageNearLimit is true)
@@ -1095,10 +1112,9 @@ export default function MindCanvas() {
 
       // Write positions directly into per-bubble MotionValues so Framer Motion
       // updates the DOM transforms without going through React's reconciler.
-      // During a pan the camera MotionValue already redraws everything; skipping
-      // MV updates here prevents two competing transform writes per frame and
-      // keeps panning smooth on mobile.
-      if (activePointers.current.size === 0) {
+      // See shouldWriteBubbleMotionValues for why this is gated on panning
+      // specifically, not on "any pointer active".
+      if (shouldWriteBubbleMotionValues(activePointers.current.size, draggingRef.current)) {
         for (const b of bubblesRef.current) {
           const p = pos[b.id];
           const mv = bubbleMVs.current.get(b.id);
@@ -1152,18 +1168,8 @@ export default function MindCanvas() {
     return out;
   }, [byId]);
 
-  const descendantsOf = useCallback((id: string): Set<string> => {
-    const ids = new Set<string>();
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const b of bubbles) {
-        if (!b.parentId) continue;
-        if ((b.parentId === id || ids.has(b.parentId)) && !ids.has(b.id)) { ids.add(b.id); changed = true; }
-      }
-    }
-    return ids;
-  }, [bubbles]);
+  // See ../lib/dragHelpers for the implementation and its tests.
+  const descendantsOf = useCallback((id: string): Set<string> => descendantsOfPure(bubbles, id), [bubbles]);
 
   // Interactive: at overview only roots; when focused, the focused bubble,
   // its whole subtree, and its ancestors (so you can step back out).
@@ -1202,6 +1208,35 @@ export default function MindCanvas() {
     return () => clearTimeout(id);
   }, [cameraX, cameraY, fitAll]);
 
+  // fitLayout already reads window.innerWidth/innerHeight fresh on every call
+  // rather than caching them, so re-running the current fit is all a resize
+  // needs — but nothing was ever triggering that re-run. A desktop window
+  // resize (or a react-native-web viewport change) left the camera framed for
+  // the OLD size: content could run off-screen or sit oddly off-center until
+  // the next unrelated fit (focusing a bubble, entering edit mode, etc.)
+  // happened to correct it. Debounced so a drag-resize doesn't restart the
+  // fit animation on every intermediate frame.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const onResize = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        const fid = focusedIdRef.current;
+        if (fid) {
+          fitLayout(layoutView(bubblesRef.current, fid, null),
+            cameraX, cameraY, cameraScale, { maxScale: 1.6, padding: 110, spring: true });
+        } else {
+          fitAll();
+        }
+      }, 200);
+    };
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      if (timer) clearTimeout(timer);
+    };
+  }, [cameraX, cameraY, cameraScale, fitAll]);
+
   // ── Edit mode ────────────────────────────────────────────────────────────
 
   const enterEditMode = useCallback(() => {
@@ -1210,7 +1245,6 @@ export default function MindCanvas() {
     setEditMode(true);
     setEditingId(null);
     setEditSelection(null);
-    setShowColorPicker(false);
     if (currentFocus) {
       fitLayout(layoutView(bubblesRef.current, currentFocus, null),
         cameraX, cameraY, cameraScale, { maxScale: 1.6, padding: 110 });
@@ -1224,7 +1258,6 @@ export default function MindCanvas() {
     setEditMode(false);
     setEditingId(null);
     setEditSelection(null);
-    setShowColorPicker(false);
   }, []);
 
   const cancelEditMode = useCallback(() => {
@@ -1233,7 +1266,6 @@ export default function MindCanvas() {
     setEditMode(false);
     setEditingId(null);
     setEditSelection(null);
-    setShowColorPicker(false);
   }, [preEditBubbles]);
 
   // ── Step out one level ───────────────────────────────────────────────────
@@ -1251,12 +1283,19 @@ export default function MindCanvas() {
       if (e.key !== 'Escape') return;
       if (editingId)    { setEditingId(null); return; }
       if (editMode)     { cancelEditMode(); return; }
+      // quickCreate wasn't checked here at all, so pressing Escape while its
+      // panel was open fell through to the focusedId branch below and stepped
+      // out of the current bubble instead — a confusing side effect entirely
+      // unrelated to the open panel. Same cleanup as onContainerDown's
+      // background-click-to-cancel and cancelQuickCreate below: drop the
+      // placeholder bubble this quick-create session added.
+      if (quickCreate)  { setBubbles(prev => prev.filter(b => b.id !== quickCreate.id)); setQuickCreate(null); return; }
       if (showAddPanel) { setShowAddPanel(false); return; }
       if (focusedId)    { stepOut(); }
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, [editingId, editMode, showAddPanel, focusedId, cancelEditMode, stepOut]);
+  }, [editingId, editMode, quickCreate, showAddPanel, focusedId, cancelEditMode, stepOut, setBubbles]);
 
   // ── Pan / Pinch-to-zoom ──────────────────────────────────────────────────
 
@@ -1264,6 +1303,11 @@ export default function MindCanvas() {
   // from two-finger pinch. The map is keyed by pointerId.
   const activePointers  = useRef<Map<number, { x: number; y: number }>>(new Map());
   const lastPinchDist   = useRef<number | null>(null);
+
+  // stepOut() used to fire on pointer-DOWN, making panning while focused
+  // impossible. It's now decided on pointer-UP via isBackgroundTap — see
+  // ../lib/dragHelpers for the tap-vs-pan discrimination and its tests.
+  const backgroundPress = useRef<{ x: number; y: number; time: number; multi: boolean } | null>(null);
 
   const onContainerDown = (e: React.PointerEvent) => {
     if (quickCreate) {
@@ -1279,13 +1323,17 @@ export default function MindCanvas() {
     e.currentTarget.setPointerCapture(e.pointerId);
 
     if (activePointers.current.size === 1) {
-      // First finger — single-touch side-effects (same as before)
+      // First finger — dismiss rename/edit-selection immediately (that part
+      // was never the pan problem), but defer the focused/stepOut decision
+      // until release so a pan isn't pre-empted.
       if (editingId) { setEditingId(null); return; }
-      if (editMode && editSelection) { setEditSelection(null); setShowColorPicker(false); return; }
-      if (focusedId) { stepOut(); }
+      if (editMode && editSelection) { setEditSelection(null); return; }
+      backgroundPress.current = { x: e.clientX, y: e.clientY, time: Date.now(), multi: false };
     } else if (activePointers.current.size === 2) {
       // Second finger — seed the pinch distance; single-pan stops naturally
-      // because onContainerMove guards on pointer count.
+      // because onContainerMove guards on pointer count. A gesture that
+      // becomes a pinch must never resolve as a stepOut tap on release.
+      if (backgroundPress.current) backgroundPress.current.multi = true;
       const pts = [...activePointers.current.values()];
       lastPinchDist.current = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
     }
@@ -1339,6 +1387,15 @@ export default function MindCanvas() {
     try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* already released */ }
     // When fewer than two fingers remain, reset pinch state.
     if (activePointers.current.size < 2) lastPinchDist.current = null;
+
+    const press = backgroundPress.current;
+    if (press) {
+      backgroundPress.current = null;
+      const wasTap = isBackgroundTap(
+        press.x, press.y, press.time, e.clientX, e.clientY, Date.now(), press.multi,
+      );
+      if (wasTap && focusedId) stepOut();
+    }
   };
 
   // ── Zoom ─────────────────────────────────────────────────────────────────
@@ -1718,22 +1775,40 @@ export default function MindCanvas() {
         </motion.div>
       )}
 
-      {/* Cloud save-failed toast — shown when the server PUT fails, clears on next successful save */}
+      {/* Cloud save-failed toast — shown when "Save canvas" fails, clears on the
+          next successful save.
+
+          The copy no longer says "make any edit to retry": under the manual-save
+          model an edit never touches the network, so that instruction described
+          behaviour that no longer exists and would have left the user editing
+          away, believing a retry was queued. The only retry is Save canvas, and
+          this toast is a button that opens Settings so it is one tap away. */}
       {!cloudSaveOk && !saveFailedToast && (
-        <motion.div
+        <motion.button
           key="cloud-save-failed"
+          type="button"
           initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }}
-          className="absolute bottom-24 left-1/2 -translate-x-1/2 z-50 pointer-events-none select-none text-center"
+          whileHover={{ scale: 1.03 }} whileTap={{ scale: .98 }}
+          onClick={() => setShowSettings(true)}
+          className="absolute bottom-24 left-1/2 -translate-x-1/2 z-50 pointer-events-auto select-none text-center"
           style={{ background: 'rgba(255,248,245,.94)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 20, padding: '9px 20px', boxShadow: '0 2px 20px rgba(0,0,0,.09),inset 0 0 0 1px rgba(200,80,60,.22)', fontSize: 12, color: 'hsl(12,55%,40%)', letterSpacing: '.03em', fontWeight: 300, maxWidth: 'calc(100vw - 32px)', whiteSpace: 'nowrap' }}>
-          ☁ Couldn't reach the server — your changes are saved locally. Make any edit to retry.
-        </motion.div>
+          {saveError === 'not-configured'
+            ? '☁ No server configured — this canvas can’t be published. Tap for options.'
+            : saveError === 'rejected'
+              ? '☁ The server refused the save — your work is safe here. Tap to try again.'
+              : '☁ Couldn’t reach the server — your work is safe here. Tap to try again.'}
+        </motion.button>
       )}
 
       {/* Breadcrumb */}
       {!editMode && breadcrumb.length > 0 && (
         <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }}
           className="absolute top-5 left-1/2 -translate-x-1/2 z-40 pointer-events-none select-none flex items-center gap-1.5"
-          style={{ background: 'rgba(255,255,255,.7)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 20, padding: '5px 16px', boxShadow: '0 2px 14px rgba(0,0,0,.05)', fontSize: 11.5, color: '#8b8b96', fontWeight: 300, letterSpacing: '.03em' }}>
+          // maxWidth keeps a deep breadcrumb from sliding under the Settings
+          // button at top-left (and its mirror on the right). Settings sits on
+          // a higher z-index, so the collision was invisible: the crumb was
+          // simply unclickable in that strip.
+          style={{ background: 'rgba(255,255,255,.7)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 20, padding: '5px 16px', boxShadow: '0 2px 14px rgba(0,0,0,.05)', fontSize: 11.5, color: '#8b8b96', fontWeight: 300, letterSpacing: '.03em', maxWidth: 'calc(100vw - 320px)', overflow: 'hidden' }}>
           {breadcrumb.map((l, i) => (
             <span key={i} className="flex items-center gap-1.5">
               {i > 0 && <span style={{ opacity: .4 }}>›</span>}
@@ -1771,7 +1846,6 @@ export default function MindCanvas() {
           const muted = visualOnly;
 
           const isFocused  = bubble.id === focusedId;
-          const isHovered  = hoveredBubble === bubble.id;
           const isEditSelected = editMode && editSelection === bubble.id;
           const showDelete = editMode && isEditSelected && bubble.id !== editingId;
           const opacity    = visualOnly ? .64 : 1;
@@ -1802,8 +1876,6 @@ export default function MindCanvas() {
               onPointerMove={onBubbleMove}
               onPointerUp={e => onBubbleUp(e, bubble.id)}
               onPointerCancel={e => onBubbleUp(e, bubble.id)}
-              onMouseEnter={() => !visualOnly && setHoveredBubble(bubble.id)}
-              onMouseLeave={() => setHoveredBubble(h => h === bubble.id ? null : h)}
             >
               {visualOnly ? (
                 // Third layer is a bare presence marker: no label, no chrome.
@@ -1921,13 +1993,19 @@ export default function MindCanvas() {
             window.alert('Could not read that file. Make sure it was exported from Mind Canvas.');
             return;
           }
+          const count = imported.bubbles.length;
           const confirmed = window.confirm(
             `Replace the current canvas with the imported map?\n\n` +
-            `The imported file contains ${imported.length} bubble${imported.length === 1 ? '' : 's'}. ` +
+            (imported.name ? `“${imported.name}” — ` : '') +
+            `the imported file contains ${count} bubble${count === 1 ? '' : 's'}. ` +
             `Your current map will be replaced.`,
           );
           if (!confirmed) return;
-          setBubbles(imported);
+          setBubbles(imported.bubbles);
+          // Take the file's name, and clear the old one when it has none —
+          // keeping the previous name would label imported content with a
+          // title belonging to the map it just replaced.
+          setCanvasName(imported.name ?? '');
           setFocusedId(null);
           setEditMode(false);
           setEditingId(null);
@@ -1945,7 +2023,7 @@ export default function MindCanvas() {
             <motion.button style={pillBase}
               className="flex items-center gap-2 font-light text-gray-500"
               whileHover={{ scale: 1.04 }} whileTap={{ scale: .97 }}
-              onClick={() => exportBubbles(bubbles)}>
+              onClick={() => exportBubbles(bubbles, { name: canvasName || undefined })}>
               <span style={{ fontSize: 13, lineHeight: 1, opacity: .7 }}>↓</span> Export
             </motion.button>
             <motion.button style={{ ...pillBase, color: 'hsl(0,45%,55%)' }}
@@ -1963,6 +2041,11 @@ export default function MindCanvas() {
             </motion.button>
           </>
         ) : (
+          // Export / Import / Sync / Clear used to live here. Import and Export
+          // are occasional, deliberate actions and moved into Settings; Clear
+          // moved there too because a one-click canvas wipe next to the drawing
+          // controls is an accident waiting to happen. Sync is gone entirely —
+          // saving is explicit now, and a newer save announces itself.
           <>
             <motion.button style={pillBase}
               className="flex items-center gap-2 font-light text-gray-500"
@@ -1983,43 +2066,78 @@ export default function MindCanvas() {
               }}>
               <span style={{ fontSize: 18, lineHeight: 1 }}>+</span> Add bubble
             </motion.button>
-            <motion.button style={pillBase}
-              className="flex items-center gap-2 font-light text-gray-500"
-              whileHover={{ scale: 1.04 }} whileTap={{ scale: .97 }}
-              onClick={() => exportBubbles(bubbles)}>
-              <span style={{ fontSize: 13, lineHeight: 1, opacity: .7 }}>↓</span> Export
-            </motion.button>
-            <motion.button style={pillBase}
-              className="flex items-center gap-2 font-light text-gray-500"
-              whileHover={{ scale: 1.04 }} whileTap={{ scale: .97 }}
-              onClick={() => importInputRef.current?.click()}>
-              <span style={{ fontSize: 13, lineHeight: 1, opacity: .7 }}>↑</span> Import
-            </motion.button>
-            <motion.button style={pillBase}
-              className="flex items-center gap-2 font-light text-gray-500"
-              whileHover={{ scale: 1.04 }} whileTap={{ scale: .97 }}
-              onClick={() => forceSyncFromCloud()}>
-              <span style={{ fontSize: 13, lineHeight: 1, opacity: .7 }}>⟳</span> Sync
-            </motion.button>
-            <motion.button style={pillBase}
-              className="flex items-center gap-2 font-light text-gray-500"
-              whileHover={{ scale: 1.04 }} whileTap={{ scale: .97 }}
-              onClick={() => {
-                if (!window.confirm('Clear the canvas and start fresh?')) return;
-                clearBubbles();
-                setBubbles(INITIAL_BUBBLES);
-                setFocusedId(null);
-                setEditMode(false);
-                setEditingId(null);
-                setEditSelection(null);
-                setQuickCreate(null);
-                setShowAddPanel(false);
-              }}>
-              <span style={{ fontSize: 13, lineHeight: 1, opacity: .6 }}>↺</span> Clear
-            </motion.button>
           </>
         )}
       </div>
+
+      {/* Settings (top-left). The unsaved dot is the only always-visible
+          signal that work is unpublished — without it the manual-save model
+          can lose an hour of edits with no warning at any point. */}
+      {!editMode && !showSettings && (
+        <div className="absolute top-6 left-6 z-50 pointer-events-auto"
+          onPointerDown={e => e.stopPropagation()}>
+          <motion.button style={pillBase}
+            className="flex items-center gap-2 font-light text-gray-500 relative"
+            whileHover={{ scale: 1.04 }} whileTap={{ scale: .97 }}
+            aria-label={hasUnsavedChanges ? 'Settings — unsaved changes' : 'Settings'}
+            onClick={e => { e.stopPropagation(); setShowSettings(true); }}>
+            <span style={{ fontSize: 14, lineHeight: 1, opacity: .7 }}>⚙</span> Settings
+            {hasUnsavedChanges && (
+              <span aria-hidden="true" title="Unsaved changes"
+                style={{
+                  position: 'absolute', top: 7, right: 7, width: 8, height: 8,
+                  borderRadius: '50%', background: 'hsl(35,85%,55%)',
+                  boxShadow: '0 0 0 2px rgba(255,255,255,.9)',
+                }} />
+            )}
+          </motion.button>
+        </div>
+      )}
+
+      {showSettings && (
+        <SettingsPanel
+          canvasName={canvasName}
+          onNameChange={setCanvasName}
+          saving={saving}
+          saveError={saveError}
+          hasUnsavedChanges={hasUnsavedChanges}
+          savedMeta={savedMeta}
+          onSave={saveCanvas}
+          onExport={() => exportBubbles(bubbles, { name: canvasName || undefined })}
+          onImport={() => importInputRef.current?.click()}
+          onClear={() => {
+            const ok = window.confirm(
+              'Erase this canvas?\n\n'
+              + 'Every bubble is removed and the canvas goes back to the starter map. '
+              + 'This cannot be undone, and the next save replaces the shared canvas '
+              + 'on your app too. Export first if you want a copy.',
+            );
+            if (!ok) return;
+            clearBubbles();
+            setBubbles(INITIAL_BUBBLES);
+            setCanvasName('');
+            setFocusedId(null);
+            setEditMode(false);
+            setEditingId(null);
+            setEditSelection(null);
+            setQuickCreate(null);
+            setShowAddPanel(false);
+            setShowSettings(false);
+          }}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
+
+      {/* Newer-save prompt */}
+      {pendingSave && (
+        <SaveAvailablePrompt
+          savedAt={pendingSave.meta.savedAt}
+          savedBy={pendingSave.meta.savedBy}
+          name={pendingSave.meta.name}
+          onAccept={acceptPendingSave}
+          onDismiss={dismissPendingSave}
+        />
+      )}
     </div>
   );
 }

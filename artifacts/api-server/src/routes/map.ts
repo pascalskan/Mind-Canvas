@@ -1,10 +1,52 @@
-import { Router, type IRouter } from 'express';
+import { Router, type IRouter, type RequestHandler } from 'express';
 import { db, mindCanvasMapTable } from '@workspace/db';
 import { eq } from 'drizzle-orm';
 import fs from 'fs';
 import path from 'path';
+import { logger } from '../lib/logger';
+import { validateMapPayload } from '../lib/mapPayload';
 
 const router: IRouter = Router();
+
+// ---------------------------------------------------------------------------
+// Auth
+//
+// /api/map is otherwise unauthenticated with open CORS and a single global
+// row (id=1) — anyone who can reach this deployment can read and overwrite
+// every map on it. Setting MAP_API_TOKEN requires a matching
+// `Authorization: Bearer <token>` header on every /api/map request.
+//
+// Off by default: with no token configured, behavior is unchanged from
+// before this existed (a startup warning is logged so the gap is visible
+// rather than silently assumed away). This is a shared secret, not a login
+// system — there is no per-user auth anywhere in this app, and both clients
+// are static bundles, so the token is only ever a deterrent against someone
+// stumbling onto the deployed URL, not a defense against someone who already
+// has legitimate access to run the app (the token ships in their bundle same
+// as it would for anyone else). See M10 in the audit for the full reasoning.
+// ---------------------------------------------------------------------------
+
+const MAP_API_TOKEN = process.env['MAP_API_TOKEN'];
+
+if (!MAP_API_TOKEN) {
+  logger.warn(
+    '/api/map: MAP_API_TOKEN is not set — every client that can reach this ' +
+    'server can read and overwrite the shared map with no credentials. Set ' +
+    'MAP_API_TOKEN (and the matching VITE_MAP_API_TOKEN / ' +
+    'EXPO_PUBLIC_MAP_API_TOKEN on each client) to require one.',
+  );
+}
+
+const requireMapToken: RequestHandler = (req, res, next) => {
+  if (!MAP_API_TOKEN) { next(); return; } // auth disabled — unchanged behavior
+  const header = req.headers.authorization;
+  const provided = header?.startsWith('Bearer ') ? header.slice(7) : null;
+  if (provided !== MAP_API_TOKEN) {
+    res.status(401).json({ ok: false, error: 'Unauthorized' });
+    return;
+  }
+  next();
+};
 
 // ---------------------------------------------------------------------------
 // Disk cache
@@ -34,6 +76,25 @@ function writeDiskCache(data: unknown): void {
     console.error('map-cache: failed to write disk cache:', err);
     try { fs.unlinkSync(tmp); } catch { /* ignore */ }
   }
+}
+
+// Tracks the DB row's updated_at as of the last time GET wrote it to disk, so
+// repeated polling (both clients poll /api/map every 30s) doesn't rewrite the
+// same bytes to disk on every request. `updated_at` only changes when a real
+// write commits, so it's a cheap, authoritative "has anything changed" check —
+// cheaper than diffing the payload itself.
+//
+// The PUT path's own writeDiskCache call is intentionally NOT gated by this:
+// it fires optimistically before the DB write is even attempted, specifically
+// so a crash before commit still leaves something on disk — a one-time write
+// per real edit, not the per-poll waste this addresses.
+let lastGetDiskCacheAt: number | null = null;
+
+function writeDiskCacheIfChanged(data: unknown, updatedAt: Date | null): void {
+  const t = updatedAt?.getTime() ?? null;
+  if (t !== null && t === lastGetDiskCacheAt) return;
+  writeDiskCache(data);
+  lastGetDiskCacheAt = t;
 }
 
 // ---------------------------------------------------------------------------
@@ -192,7 +253,7 @@ setInterval(() => {
  * not be overwritten by a stale DB read. On a database error the last-known-
  * good value is served instead of null.
  */
-router.get('/map', async (_req, res) => {
+router.get('/map', requireMapToken, async (_req, res) => {
   // Uncommitted local state is fresher than anything in the DB right now.
   if (latestKnown !== null && latestKnown.gen > committedGeneration) {
     res.json(latestKnown.data);
@@ -218,7 +279,7 @@ router.get('/map', async (_req, res) => {
     if (latestKnown === null || latestKnown.gen <= committedGeneration) {
       latestKnown = { gen: committedGeneration, data: dbData };
     }
-    writeDiskCache(dbData);
+    writeDiskCacheIfChanged(dbData, rows[0].updatedAt);
     res.json(dbData);
   } catch (err) {
     console.error('GET /api/map: database unreachable, serving cached value. Error:', err);
@@ -244,9 +305,20 @@ router.get('/map', async (_req, res) => {
  * the data is kept as the latest known state and replayed by the background
  * retry loop, so no save is silently discarded.
  */
-router.put('/map', async (req, res) => {
+router.put('/map', requireMapToken, async (req, res) => {
+  // Validate BEFORE claiming a generation or touching any cache. This row is
+  // the single shared canvas for every device, so a bad body must not become
+  // latestKnown, must not be written to the disk cache, and must not consume a
+  // generation number that would then out-rank a good concurrent write.
+  const parsed = validateMapPayload(req.body);
+  if (!parsed.ok) {
+    logger.warn(`PUT /api/map rejected: ${parsed.error}`);
+    res.status(400).json({ ok: false, error: parsed.error });
+    return;
+  }
+
   const myGen = ++writeGeneration;
-  const data = req.body;
+  const data = parsed.value;
 
   // Optimistically record this as the newest known data immediately so GET can
   // serve it if the DB becomes unreachable before the write completes.

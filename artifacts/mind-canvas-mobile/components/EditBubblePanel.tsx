@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { useBubbles } from '@/context/BubbleContext';
 import { PILLAR_COLORS, SCALE_OPTIONS } from '@/lib/bubbleLayout';
+import { useSlideIn } from '@/lib/animation';
 
 interface Props {
   bubbleId: string;
@@ -17,7 +18,7 @@ interface Props {
 export default function EditBubblePanel({ bubbleId, focusLabel }: Props) {
   const {
     byId, renameBubble, recolorBubble, resizeBubble, deleteBubble,
-    setEditSelection, setEditMode, focusedId, setFocusedId,
+    setEditSelection, focusedId, setFocusedId,
   } = useBubbles();
   const insets = useSafeAreaInsets();
 
@@ -26,13 +27,9 @@ export default function EditBubblePanel({ bubbleId, focusLabel }: Props) {
   const [color, setColor] = useState(bubble?.color ?? PILLAR_COLORS[0]);
   const [scale, setScale] = useState(bubble?.scale ?? 1.0);
 
-  // Slide up
-  const slideY = useRef(new Animated.Value(400)).current;
-  useEffect(() => {
-    Animated.spring(slideY, {
-      toValue: 0, useNativeDriver: true, tension: 55, friction: 12,
-    }).start();
-  }, []);
+  // Slide up. useSlideIn guarantees the resting position even when the
+  // animation is skipped — see lib/animation.ts.
+  const slideY = useSlideIn(400);
 
   if (!bubble) return null;
 

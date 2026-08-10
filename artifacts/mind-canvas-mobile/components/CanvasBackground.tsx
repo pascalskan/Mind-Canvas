@@ -1,10 +1,8 @@
 import React from 'react';
-import { Dimensions } from 'react-native';
+import { useWindowDimensions } from 'react-native';
 import Svg, {
   Circle, Defs, Line, Rect, RadialGradient, Stop, Pattern,
 } from 'react-native-svg';
-
-const { width: SW, height: SH } = Dimensions.get('window');
 
 interface Camera { x: number; y: number; scale: number }
 interface Props   { camera: Camera }
@@ -19,6 +17,12 @@ interface Props   { camera: Camera }
  * grid lines always align with world-space grid points.
  */
 export const CanvasBackground = React.memo(function CanvasBackground({ camera }: Props) {
+  // useWindowDimensions, not a module-level Dimensions.get() snapshot — this
+  // component is memoized on `camera` alone, so a stale module constant would
+  // never have been corrected even by an unrelated re-render elsewhere; the
+  // background would just stay sized for whatever the viewport was at first
+  // mount, indefinitely, after any rotation or (react-native-web) resize.
+  const { width: SW, height: SH } = useWindowDimensions();
   const { x: camX, y: camY, scale } = camera;
 
   // Screen-space spacing between grid lines

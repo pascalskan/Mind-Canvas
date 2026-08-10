@@ -9,17 +9,20 @@ import { useBubbles } from '@/context/BubbleContext';
 import CanvasView from '@/components/CanvasView';
 import AddBubblePanel from '@/components/AddBubblePanel';
 import EditBubblePanel from '@/components/EditBubblePanel';
+import SettingsPanel from '@/components/SettingsPanel';
+import SaveAvailablePrompt from '@/components/SaveAvailablePrompt';
 
 export default function MainScreen() {
   const {
     bubbles, focusedId, editMode, editSelection,
-    byId, setFocusedId, setEditMode, setEditSelection,
-    cloudSaveOk,
-    exportMap, importMap, forceSyncFromCloud,
+    byId, setFocusedId, setEditSelection,
+    enterEditMode, cancelEditMode, saveEditMode,
+    cloudSaveOk, saveError, hasUnsavedChanges,
   } = useBubbles();
 
   const insets = useSafeAreaInsets();
   const [showAdd, setShowAdd]           = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [addParentId, setAddParentId]   = useState<string | null>(null);
   const [focusEditLabel, setFocusEditLabel] = useState(false);
   // Tracks whether the current focusEditLabel=true was consumed at mount time,
@@ -67,14 +70,16 @@ export default function MainScreen() {
   // ── Edit handlers ──────────────────────────────────────────────────────────
 
   const enterEdit = () => {
-    setEditMode(true);
+    enterEditMode();
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
   };
   const cancelEdit = () => {
-    setEditMode(false); setEditSelection(null); setFocusEditLabel(false); Haptics.selectionAsync();
+    // cancelEditMode reverts every mutation made since enterEditMode (see
+    // M4) — Cancel used to be identical to Done, silently keeping edits.
+    cancelEditMode(); setFocusEditLabel(false); Haptics.selectionAsync();
   };
   const doneEdit = () => {
-    setEditMode(false); setEditSelection(null); setFocusEditLabel(false);
+    saveEditMode(); setFocusEditLabel(false);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   };
 
@@ -87,10 +92,10 @@ export default function MainScreen() {
 
   const handleDoubleTapBubble = useCallback((id: string) => {
     doubleTapPendingRef.current = true;
-    setEditMode(true);
+    enterEditMode();
     setEditSelection(id);
     setFocusEditLabel(true);
-  }, [setEditMode, setEditSelection]);
+  }, [enterEditMode, setEditSelection]);
 
   const closeAddPanel = useCallback(() => {
     setShowAdd(false);
@@ -104,6 +109,26 @@ export default function MainScreen() {
         onLongPressAddChild={handleLongPressAddChild}
         onDoubleTapBubble={handleDoubleTapBubble}
       />
+
+      {/* ── Settings (top-left) ─────────────────────────────────────────── */}
+      {!showAdd && !showSettings && !editMode && (
+        <View style={[styles.settingsWrap, { top: topInset }]} pointerEvents="box-none">
+          <TouchableOpacity
+            style={styles.iconBtn}
+            onPress={() => { setShowSettings(true); Haptics.selectionAsync(); }}
+            accessibilityLabel="Settings"
+          >
+            <Feather name="settings" size={19} color="#6b7280" />
+            {/* Unsaved-changes dot. Under the manual-save model nothing reaches
+                the cloud until the user asks, so the app owes them a standing,
+                glanceable answer to "is my work published?" — otherwise the
+                only honest signal is buried inside the panel they have to open. */}
+            {hasUnsavedChanges && (
+              <View style={styles.unsavedDot} pointerEvents="none" />
+            )}
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* ── Breadcrumb bar ──────────────────────────────────────────────── */}
       {breadcrumb.length > 0 && (
@@ -173,25 +198,12 @@ export default function MainScreen() {
               </TouchableOpacity>
             </View>
           ) : (
+            // Import/Export/Sync used to sit here. Import and Export moved into
+            // Settings (they are occasional, deliberate actions), and Sync is
+            // gone entirely — saving is now explicit and the app offers a newer
+            // save via SaveAvailablePrompt instead of a button you have to know
+            // to press.
             <View style={styles.toolbarRow} pointerEvents="auto">
-              <TouchableOpacity
-                style={styles.iconBtn}
-                onPress={() => { importMap(); Haptics.selectionAsync(); }}
-              >
-                <Feather name="upload" size={20} color="#6b7280" />
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.iconBtn}
-                onPress={() => { exportMap(); Haptics.selectionAsync(); }}
-              >
-                <Feather name="download" size={20} color="#6b7280" />
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.iconBtn}
-                onPress={() => { forceSyncFromCloud(); Haptics.selectionAsync(); }}
-              >
-                <Feather name="refresh-cw" size={20} color="#6b7280" />
-              </TouchableOpacity>
               <TouchableOpacity style={[styles.pill, styles.pillEdit]} onPress={enterEdit}>
                 <Feather name="edit-2" size={14} color="#6b7280" />
                 <Text style={[styles.pillText, { color: '#6b7280' }]}>Edit</Text>
@@ -212,18 +224,37 @@ export default function MainScreen() {
         </View>
       )}
 
-      {/* ── Cloud save-failed toast ─────────────────────────────────────── */}
-      {!cloudSaveOk && (
-        <View style={[styles.cloudFailToast, { bottom: bottomInset + 76 }]} pointerEvents="none">
-          <Text style={styles.cloudFailText}>
-            ☁ Couldn't reach the server — saved locally. Make any edit to retry.
-          </Text>
+      {/* ── Cloud save-failed toast ─────────────────────────────────────────
+          Clears on the next successful save. The old copy told the user to
+          "make any edit to retry" — true when every edit auto-pushed, and
+          actively misleading now that editing never touches the network. The
+          only retry is Save canvas, so this is a button that opens Settings. */}
+      {!cloudSaveOk && !showSettings && (
+        <View style={[styles.cloudFailToast, { bottom: bottomInset + 76 }]} pointerEvents="box-none">
+          <TouchableOpacity
+            onPress={() => { setShowSettings(true); Haptics.selectionAsync(); }}
+            accessibilityRole="button"
+            accessibilityLabel="Saving failed — open settings to try again"
+          >
+            <Text style={styles.cloudFailText}>
+              {saveError === 'not-configured'
+                ? '☁ No server configured — this canvas can’t be published. Tap for options.'
+                : saveError === 'rejected'
+                  ? '☁ The server refused the save — your work is safe here. Tap to try again.'
+                  : '☁ Couldn’t reach the server — your work is safe here. Tap to try again.'}
+            </Text>
+          </TouchableOpacity>
         </View>
       )}
 
       {/* ── Edit panel ──────────────────────────────────────────────────── */}
+      {/* key={editSelection} forces a remount on every selection change — the
+          panel seeds label/color/scale from props via useState (initial value
+          only), so without a key React reuses the instance across selections
+          and both the displayed values AND a rename-on-blur silently apply to
+          the wrong bubble. */}
       {editMode && editSelection && (
-        <EditBubblePanel bubbleId={editSelection} focusLabel={focusEditLabel} />
+        <EditBubblePanel key={editSelection} bubbleId={editSelection} focusLabel={focusEditLabel} />
       )}
 
       {/* ── Add panel ───────────────────────────────────────────────────── */}
@@ -233,6 +264,12 @@ export default function MainScreen() {
           initialParentId={addParentId}
         />
       )}
+
+      {/* ── Settings sheet ──────────────────────────────────────────────── */}
+      {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
+
+      {/* ── Newer-save prompt (renders nothing when there is none) ───────── */}
+      <SaveAvailablePrompt />
     </View>
   );
 }
@@ -241,13 +278,19 @@ const styles = StyleSheet.create({
   breadcrumb: {
     position: 'absolute', left: 0, right: 0,
     alignItems: 'center', zIndex: 50,
+    // Keep the bar clear of the Settings button (44pt wide at left: 12) and of
+    // the symmetric space on the right. Without this the centred bar — up to
+    // 90% of the screen — ran underneath the button on narrow devices, so a tap
+    // meant for the first crumb opened Settings instead. Settings still wins on
+    // zIndex, which is what made the collision silent rather than visible.
+    paddingHorizontal: 64,
   },
   breadcrumbInner: {
     flexDirection: 'row', alignItems: 'center',
     backgroundColor: 'rgba(255,255,255,0.88)',
     borderRadius: 20, paddingHorizontal: 12, height: 36,
     shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.08, shadowRadius: 6, elevation: 4, maxWidth: '90%',
+    shadowOpacity: 0.08, shadowRadius: 6, elevation: 4, maxWidth: '100%',
   },
   breadcrumbHome: { paddingHorizontal: 4, height: 36, justifyContent: 'center' },
   chevron: { marginHorizontal: 2 },
@@ -273,6 +316,9 @@ const styles = StyleSheet.create({
     fontSize: 11, fontFamily: 'Inter_400Regular',
     color: '#9ca3af', letterSpacing: 0.8, opacity: 0.7,
   },
+  settingsWrap: {
+    position: 'absolute', left: 12, zIndex: 55,
+  },
   toolbar: {
     position: 'absolute', left: 0, right: 0,
     alignItems: 'center', zIndex: 50,
@@ -295,6 +341,12 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.08, shadowRadius: 6, elevation: 3,
+  },
+  unsavedDot: {
+    position: 'absolute', top: 8, right: 8,
+    width: 9, height: 9, borderRadius: 4.5,
+    backgroundColor: 'hsl(35,85%,55%)',
+    borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.95)',
   },
   cloudFailToast: {
     position: 'absolute', left: 16, right: 16,

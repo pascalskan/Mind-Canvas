@@ -4,6 +4,10 @@
 artifacts/api-server/map-cache.json
 artifacts/api-server/map-cache.json.tmp
 
+# Local development environment (see .env.example)
+.env
+.env.local
+
 # compiled output
 dist
 tmp

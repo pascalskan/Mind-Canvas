@@ -18,7 +18,21 @@ const ROOT_HSL: [number, number, number][] = [
 export const PILLAR_COLORS: string[] = PILLAR_HSL.map(([h, s, l]) => hslToHex(h, s, l));
 export const ROOT_COLORS:   string[] = ROOT_HSL.map(([h, s, l]) => hslToHex(h, s, l));
 
-export const SCALE_OPTIONS: number[] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
+// Matches web exactly (SCALE_MIN/MAX/STEP in the web bubbleLayout.ts): a
+// bubble scaled on one platform must have a corresponding, selectable chip on
+// the other. Generated from the same three constants rather than hardcoded
+// separately, so the two can't silently drift apart again — mobile used to
+// hardcode 7 coarse steps ([0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]) while web had
+// 20, so e.g. a bubble scaled to 0.3 on web showed no selected chip here and
+// any tap coarsened it.
+export const SCALE_MIN  = 0.1;
+export const SCALE_MAX  = 2.0;
+export const SCALE_STEP = 0.1;
+
+export const SCALE_OPTIONS: number[] = Array.from(
+  { length: Math.round((SCALE_MAX - SCALE_MIN) / SCALE_STEP) + 1 },
+  (_, i) => Math.round((SCALE_MIN + i * SCALE_STEP) * 10) / 10,
+);
 
 // Gap between bubble edges in world units — matches web GAP = 9
 export const GAP = 9;
@@ -46,6 +60,133 @@ export function ringRadius(parentR: number, childR: number, n: number): number {
   if (n <= 1) return parentR + childR + minGap;
   const ringByAngle = (childR + minGap / 2) / Math.sin(Math.PI / n);
   return Math.max(parentR + childR + minGap, ringByAngle);
+}
+
+const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+
+/**
+ * The band a child may live in, measured in radii from its parent:
+ *   minD    — touching its parent
+ *   natural — where it sits if it has never been dragged
+ *   maxD    — the end of its leash
+ * Mirrors web's radialBand (MindCanvas.tsx) exactly, using this platform's
+ * own ringRadius/GAP — see H3 in the audit for why this exists: web stores a
+ * child's position as angle + a fraction of this band; without a matching
+ * band on mobile, a `radial` value written by web had nothing to resolve
+ * against here.
+ */
+export function radialBand(pr: number, cr: number, n: number): { minD: number; maxD: number; natural: number } {
+  const minD = pr + cr + GAP;
+  const natural = ringRadius(pr, cr, n);
+  const maxD = Math.max(natural + Math.max(40, pr * 0.9), minD + Math.max(48, pr * 1.6));
+  return { minD, maxD, natural };
+}
+
+/**
+ * angle + radial fraction for a child at world position (cx, cy) orbiting a
+ * parent at (px, py), resolved against `band`. Mirrors web's applyChildDrag
+ * (dragHelpers.ts) — the inverse of walking angle/radial back out to x/y.
+ */
+export function deriveAngleRadial(
+  cx: number, cy: number, px: number, py: number,
+  band: { minD: number; maxD: number },
+): { angle: number; radial: number } {
+  const dx = cx - px, dy = cy - py;
+  const d = Math.hypot(dx, dy) || 1;
+  const span = Math.max(1, band.maxD - band.minD);
+  return { angle: Math.atan2(dy, dx), radial: clamp01((d - band.minD) / span) };
+}
+
+/**
+ * A depth-based (not layer/focus-relative) band for a parent/child pair,
+ * used specifically as the CANONICAL reference frame for angle/radial <->
+ * x/y conversion outside of live rendering — see canonicalChildPosition.
+ */
+function canonicalBand(parent: BubbleData, child: BubbleData, siblingCount: number) {
+  return radialBand(sizeForDepth(parent.depth) / 2, sizeForDepth(child.depth) / 2, siblingCount);
+}
+
+/**
+ * The canonical world (x, y) for a non-root bubble, derived from its stored
+ * angle/radial against a DEPTH-based band (sizeForDepth, not the current
+ * focus's layer-relative sizing) — the same reference frame buildInitialBubbles
+ * and addBubble already seed positions in, so it's always computable
+ * regardless of what's currently focused (layer-relative sizing only makes
+ * sense for a bubble that's actually inside the current three-layer view).
+ *
+ * When angle is absent (never dragged, or written by an older client),
+ * derives it from the stored x/y instead — mirrors web's `b.angle ?? computed`
+ * fallback exactly, so a bubble that's never been touched keeps its seeded
+ * direction rather than jumping.
+ */
+export function canonicalChildPosition(
+  bubble: BubbleData,
+  parent: BubbleData,
+  ringIndex: number,
+  ringSize: number,
+): { x: number; y: number; angle: number; radial: number } {
+  const band = canonicalBand(parent, bubble, ringSize);
+  const dx = bubble.x - parent.x, dy = bubble.y - parent.y;
+  const angle = bubble.angle ?? (Math.hypot(dx, dy) > 1
+    ? Math.atan2(dy, dx)
+    : (ringIndex / ringSize) * Math.PI * 2 - Math.PI / 2);
+  const span = Math.max(1, band.maxD - band.minD);
+  const home = bubble.radial ?? clamp01((band.natural - band.minD) / span);
+  const r = band.minD + span * clamp01(home);
+  return {
+    x: parent.x + Math.cos(angle) * r,
+    y: parent.y + Math.sin(angle) * r,
+    angle,
+    radial: clamp01(home),
+  };
+}
+
+/**
+ * Recomputes x/y for every non-root bubble from its angle/radial (falling
+ * back to deriving them from x/y when absent), depth-ascending so a parent's
+ * corrected position is ready before its children need it.
+ *
+ * This is the mobile half of H3: it replaces the old grandchild-only,
+ * fixed-fan-angle correctGrandchildPositions, generalized to every non-root
+ * level and driven by the bubble's REAL angle/radial when one exists —
+ * needed wherever mobile ingests bubbles it didn't compute itself (cloud
+ * bootstrap, cross-device poll merge), since a web client's x/y for a child
+ * is vestigial (web never writes it back after the first drag) while mobile
+ * still reads x/y directly for its own rendering.
+ */
+export function syncPositionsFromAngleRadial(bubbles: BubbleData[]): BubbleData[] {
+  const byId: Record<string, BubbleData> = {};
+  for (const b of bubbles) byId[b.id] = b;
+
+  const rings: Record<string, string[]> = {};
+  for (const b of bubbles) {
+    if (!b.parentId) continue;
+    (rings[b.parentId] ??= []).push(b.id);
+  }
+
+  const ordered = [...bubbles].sort((a, b) => a.depth - b.depth);
+  const resolved: Record<string, BubbleData> = {};
+  let changed = false;
+
+  for (const b of ordered) {
+    const parent = b.parentId ? (resolved[b.parentId] ?? byId[b.parentId]) : null;
+    if (!parent) {
+      resolved[b.id] = b;
+      continue;
+    }
+    const ring = rings[parent.id] ?? [b.id];
+    const index = Math.max(0, ring.indexOf(b.id));
+    const { x, y, angle, radial } = canonicalChildPosition(b, parent, index, ring.length);
+    if (Math.abs(x - b.x) > 0.5 || Math.abs(y - b.y) > 0.5 || b.angle !== angle || b.radial !== radial) {
+      changed = true;
+      resolved[b.id] = { ...b, x, y, angle, radial };
+    } else {
+      resolved[b.id] = b;
+    }
+  }
+
+  if (!changed) return bubbles;
+  return bubbles.map(b => resolved[b.id] ?? b);
 }
 
 // ── Three-layer view ──────────────────────────────────────────────────────────
@@ -161,6 +302,31 @@ export function resolveCollisions(
     }
   }
   return result;
+}
+
+// ── Unsaved-changes fingerprint ───────────────────────────────────────────────
+
+/**
+ * A compact fingerprint of everything a save would capture: the canvas name
+ * plus every persisted field of every bubble. Comparing this against the last
+ * saved state is how "you have unsaved changes" is decided.
+ *
+ * Positions are rounded to whole units deliberately — sub-pixel drift from
+ * layout settling is not a user edit, and rounding stops a canvas that is
+ * merely re-deriving positions from reporting itself as modified.
+ *
+ * Kept byte-identical to the web implementation (useBubbleState.ts) so both
+ * platforms agree on what "changed" means.
+ */
+export function canvasSignature(bubbles: BubbleData[], name?: string): string {
+  const parts = bubbles
+    .map(b => [
+      b.id, b.label, b.color, b.depth, b.parentId ?? '',
+      Math.round(b.x), Math.round(b.y),
+      b.angle?.toFixed(3) ?? '', b.radial?.toFixed(3) ?? '', b.scale ?? '',
+    ].join('~'))
+    .sort();
+  return `${name ?? ''}::${parts.join('|')}`;
 }
 
 // ── Subtree helper ────────────────────────────────────────────────────────────

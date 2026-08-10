@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Dimensions, PanResponder, StyleSheet, View } from 'react-native';
+import { Animated, PanResponder, StyleSheet, useWindowDimensions, View } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { useBubbles } from '@/context/BubbleContext';
 import { BubbleNode } from '@/components/BubbleNode';
@@ -8,10 +8,9 @@ import {
   getBubbleDisplaySize, isInThreeLayerView, relativeLayer,
   getAllDescendants, resolveCollisions, ringRadius,
   LAYER_SIZES_OVERVIEW, LAYER_SIZES_FOCUSED, sizeForDepth,
+  radialBand, deriveAngleRadial,
 } from '@/lib/bubbleLayout';
 import { BubbleData } from '@/lib/bubbleTypes';
-
-const { width: SW, height: SH } = Dimensions.get('window');
 
 const INIT_SCALE   = 0.28;
 const MIN_SCALE    = 0.06;
@@ -32,15 +31,16 @@ function toWorld(sx: number, sy: number, cam: Camera) {
 }
 
 function fitBounds(
+  sw: number, sh: number,
   minX: number, maxX: number, minY: number, maxY: number,
   pad = 90, maxScale = 0.9,
 ): Camera {
   const w = maxX - minX + pad * 2;
   const h = maxY - minY + pad * 2;
-  const scale = Math.min(SW / w, SH / h, maxScale);
+  const scale = Math.min(sw / w, sh / h, maxScale);
   const midX  = (minX + maxX) / 2;
   const midY  = (minY + maxY) / 2;
-  return { x: SW / 2 - midX * scale, y: SH / 2 - midY * scale, scale };
+  return { x: sw / 2 - midX * scale, y: sh / 2 - midY * scale, scale };
 }
 
 function lerp(a: number, b: number, t: number) { return a + (b - a) * t; }
@@ -92,14 +92,42 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: P
   const {
     bubbles, focusedId, editMode, editSelection, byId,
     setFocusedId, setEditSelection, updateBubblePosition,
-    batchUpdatePositions, snapGrandchildren,
+    batchUpdatePositions, resyncPositions,
   } = useBubbles();
 
-  // ── Camera ──────────────────────────────────────────────────────────────────
-  const cameraRef  = useRef<Camera>({ x: SW / 2, y: SH / 2, scale: INIT_SCALE });
-  const [camera, setCamera] = useState<Camera>({ x: SW / 2, y: SH / 2, scale: INIT_SCALE });
+  // useWindowDimensions (not a module-level Dimensions.get() snapshot) so a
+  // rotation or, on react-native-web, a browser resize is actually reflected —
+  // previously SW/SH were captured once at module load and never updated, so
+  // the initial camera position and every fitBounds() call (below, and in the
+  // camera-fit-on-focus effect) stayed sized for whatever the viewport was at
+  // first mount. The pan/pinch gesture math doesn't need this: it works in
+  // relative touch deltas against the camera's own x/y/scale, not against
+  // absolute screen dimensions.
+  const dims = useWindowDimensions();
 
+  // ── Camera ──────────────────────────────────────────────────────────────────
+  const cameraRef  = useRef<Camera>({ x: dims.width / 2, y: dims.height / 2, scale: INIT_SCALE });
+  const [camera, setCamera] = useState<Camera>({ x: dims.width / 2, y: dims.height / 2, scale: INIT_SCALE });
+
+  /**
+   * Last line of defence for the camera. A non-finite x/y/scale is
+   * unrecoverable: it propagates into every bubble's rendered size and
+   * position, React Native throws on NaN layout values, the ErrorBoundary
+   * takes over and the only way out is reloadAppAsync() — the "app errors and
+   * needs a hard refresh" symptom. Worse, drag math divides by camera scale,
+   * so a poisoned camera writes NaN into bubble x/y, which JSON-serialises to
+   * null and corrupts the shared cloud map for every device.
+   *
+   * The specific known trigger (two touches landing on the same pixel, making
+   * pinch compute 0/0) is fixed at source in onPanResponderMove, but a clamp
+   * of Math.max(MIN, Math.min(MAX, NaN)) is still NaN, so any future
+   * arithmetic slip would silently poison the camera the same way. Rejecting
+   * the update outright means a bad frame is simply ignored instead.
+   */
   function applyCameraImmediate(cam: Camera) {
+    if (!Number.isFinite(cam.x) || !Number.isFinite(cam.y) || !Number.isFinite(cam.scale) || cam.scale <= 0) {
+      return;
+    }
     cameraRef.current = cam;
     setCamera({ ...cam });
   }
@@ -127,6 +155,7 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: P
     animFrameRef.current = requestAnimationFrame(step);
   }
   useEffect(() => () => cancelAnimationFrame(animFrameRef.current), []);
+  useEffect(() => () => { if (singleTapTimerRef.current) clearTimeout(singleTapTimerRef.current); }, []);
 
   // ── Stale-closure-safe refs ──────────────────────────────────────────────────
   const bubblesRef    = useRef(bubbles);   bubblesRef.current    = bubbles;
@@ -140,10 +169,17 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: P
   const setEditSelRef = useRef(setEditSelection); setEditSelRef.current = setEditSelection;
   const onLongPressRef        = useRef(onLongPressAddChild); onLongPressRef.current        = onLongPressAddChild;
   const onDoubleTapRef        = useRef(onDoubleTapBubble);  onDoubleTapRef.current        = onDoubleTapBubble;
-  const snapGrandchildrenRef  = useRef(snapGrandchildren);  snapGrandchildrenRef.current  = snapGrandchildren;
+  const resyncPositionsRef  = useRef(resyncPositions);  resyncPositionsRef.current  = resyncPositions;
 
   // Tracks the last bubble tap for double-tap detection.
   const lastTapRef = useRef<{ id: string | null; time: number }>({ id: null, time: 0 });
+  // The first tap of a double-tap is indistinguishable from a standalone tap
+  // until the second one (or its absence) is observed, so the single-tap
+  // action is deferred by DOUBLE_TAP_MS and only fires if no second tap
+  // arrives in time. Without this, every double-tap ALSO fired the single-tap
+  // focus/zoom action first (see handleBubbleTap), so double-tapping to
+  // rename always zoomed the camera in before the editor opened.
+  const singleTapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Physics collision resolution ─────────────────────────────────────────────
   // Working positions during animation; seeded once when a single bubble is
@@ -252,23 +288,28 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: P
 
     if (!fid) {
       // Returning to overview — zoom back out
-      animateCamera(fitBounds(minX, maxX, minY, maxY, 90, 0.9));
+      animateCamera(fitBounds(dims.width, dims.height, minX, maxX, minY, maxY, 90, 0.9));
     } else if (prevFid === null) {
       // First focus from overview — zoom in once
-      animateCamera(fitBounds(minX, maxX, minY, maxY, 110, 1.6));
+      animateCamera(fitBounds(dims.width, dims.height, minX, maxX, minY, maxY, 110, 1.6));
     } else {
-      // Already focused — pan only, preserve the locked scale
+      // Already focused — pan only, preserve the locked scale. This also
+      // covers a resize/rotation while staying focused (prevFid === fid in
+      // that case): recenter for the new dimensions without forcing a rezoom.
       const scale = cameraRef.current.scale;
       const midX  = (minX + maxX) / 2;
       const midY  = (minY + maxY) / 2;
       animateCamera({
-        x: SW / 2 - midX * scale,
-        y: SH / 2 - midY * scale,
+        x: dims.width / 2 - midX * scale,
+        y: dims.height / 2 - midY * scale,
         scale,
       });
     }
+  // dims is intentionally a dependency (not just focusedId): a resize or
+  // rotation must re-run this to reframe the camera for the new viewport,
+  // which is the actual fix for M11 — see the comment on dimsRef above.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusedId]);
+  }, [focusedId, dims.width, dims.height]);
 
   // ── Drag state ───────────────────────────────────────────────────────────────
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -310,7 +351,13 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: P
     const bid   = byIdRef.current;
     const physP = physicsPos.current;
     for (let i = vis.length - 1; i >= 0; i--) {
-      const b    = vis[i];
+      const b = vis[i];
+      // Layer-2 pips are rendered pointerEvents="none" (bare presence dots,
+      // no label, no chrome) — but that only blocks BubbleNode's own touch
+      // area, not this geometric hit test, so a pip was still tappable and
+      // would focus into it. Web deliberately makes layer 2 visual-only;
+      // exclude it here too so both platforms treat it the same way.
+      if (relativeLayer(b.id, fid, bid) === 2) continue;
       const phys = physP[b.id];
       const bx   = phys ? phys.x : b.x;
       const by   = phys ? phys.y : b.y;
@@ -429,6 +476,19 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: P
             return;
           }
 
+          // Both distances must be positive before dividing. Two touches can
+          // report the same pageX/pageY for a frame at the start of a pinch,
+          // which makes this 0/0 = NaN — and NaN survives the clamp below
+          // (Math.max(MIN, Math.min(MAX, NaN)) is NaN), permanently poisoning
+          // the camera. Web has always had this guard (MindCanvas.tsx); mobile
+          // did not, which is what made the app error out and need a hard
+          // refresh. Skipping the frame is harmless: the next move event with
+          // real separation resumes the pinch normally.
+          if (pinchStart.current.dist <= 0 || dist <= 0) {
+            pinchStart.current.dist = dist;
+            return;
+          }
+
           const ratio = dist / pinchStart.current.dist;
           const newS  = Math.max(MIN_SCALE, Math.min(MAX_SCALE, pinchStart.current.savedScale * ratio));
           const { wx: focWX, wy: focWY } = toWorld(midX, midY, cameraRef.current);
@@ -522,9 +582,6 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: P
         const dist = Math.sqrt(dx * dx + dy * dy);
         const dur  = Date.now() - touchStart.current.time;
 
-        // Reset subtree animation value (positions will be committed to state)
-        subtreeDeltaAnim.setValue({ x: 0, y: 0 });
-
         if (isDraggingBubble.current && draggingIdRef.current) {
           const draggedId  = draggingIdRef.current;
           const s          = cameraRef.current.scale;
@@ -570,18 +627,64 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: P
           );
 
           // Merge resolved positions into updates
-          const allUpdates = new Map(updates.map(u => [u.id, u]));
+          const allUpdates = new Map<string, { id: string; x: number; y: number; angle?: number; radial?: number }>(
+            updates.map(u => [u.id, u]),
+          );
           for (const [id, pos] of Object.entries(resolved)) {
             allUpdates.set(id, { id, ...pos });
           }
 
-          batchUpdateRef.current([...allUpdates.values()]);
-          // Snap grandchild pips to the opposite-from-grandparent side of their
-          // parent now that the parent has a new position on its ring.
-          snapGrandchildrenRef.current();
+          // H3: derive angle/radial for every non-root bubble whose x/y just
+          // changed here, so the drop is representable and syncable on the
+          // other platform — web stores a child's position as angle + a
+          // leash fraction, not x/y. This naturally covers descendants and
+          // collision-pushed siblings correctly, not just the dragged bubble
+          // itself: a descendant's relative offset from ITS OWN parent was
+          // preserved exactly by the uniform delta above (or is unaffected
+          // if only a sibling moved), so deriving from the (possibly also
+          // updated) parent position here reproduces the same angle/radial
+          // it already implicitly had — this is a correctness pass, not a
+          // behavior change, for anything that didn't have angle/radial set.
+          const finalUpdates = [...allUpdates.values()].map(u => {
+            const b = bid[u.id];
+            if (!b?.parentId) return u;
+            const parent = bid[b.parentId];
+            if (!parent) return u;
+            const parentPos = allUpdates.get(parent.id) ?? { x: parent.x, y: parent.y };
+            const siblingCount = Math.max(1, allBubbles.filter(s => s.parentId === b.parentId).length);
+            const band = radialBand(sizeForDepth(parent.depth) / 2, sizeForDepth(b.depth) / 2, siblingCount);
+            const { angle, radial } = deriveAngleRadial(u.x, u.y, parentPos.x, parentPos.y, band);
+            return { ...u, angle, radial };
+          });
+
+          batchUpdateRef.current(finalUpdates);
+          // The dragged bubble has a new position on its ring, so every
+          // descendant's canonical x/y — derived from its own angle/radial
+          // relative to its parent — has to be recomputed. (The old name for
+          // this, snapGrandchildren, described a long-dead grandchild-only
+          // fixed-fan pass; it walks the whole tree.)
+          resyncPositionsRef.current();
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
+          // Resetting subtreeDeltaAnim to zero HERE (synchronously, before the
+          // batchUpdate above has been committed and re-rendered) used to
+          // cause a one-frame snap-back: subtreeBubbles render from stored
+          // b.x/b.y, offset by this Animated.Value, so zeroing it before the
+          // new x/y have propagated briefly shows the subtree at its OLD
+          // (pre-drag) position. Deferring one frame lets the state update
+          // commit first, so by the time the offset is zeroed the bubbles are
+          // already rendering at the new position and there's nothing to jump.
+          requestAnimationFrame(() => subtreeDeltaAnim.setValue({ x: 0, y: 0 }));
+
         } else if (dist < TAP_DIST && dur < TAP_MS && !pinchStart.current) {
+          // Only the most recent tap's deferred single-tap action should ever
+          // fire — an in-flight timer from an earlier, different tap (on
+          // another bubble, or before a tap on the background) is stale now.
+          if (singleTapTimerRef.current) {
+            clearTimeout(singleTapTimerRef.current);
+            singleTapTimerRef.current = null;
+          }
+
           if (draggingIdRef.current) {
             const tappedId = draggingIdRef.current;
             const now      = Date.now();
@@ -592,7 +695,15 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: P
               handleBubbleDoubleTap(tappedId);
             } else {
               lastTapRef.current = { id: tappedId, time: now };
-              handleBubbleTap(tappedId);
+              // Defer instead of firing immediately: if a second tap on this
+              // same bubble lands within DOUBLE_TAP_MS, the branch above
+              // fires the double-tap action and this timer gets cancelled by
+              // that tap's own cleanup at the top of this block — otherwise
+              // it fires as a genuine single tap once the window passes.
+              singleTapTimerRef.current = setTimeout(() => {
+                singleTapTimerRef.current = null;
+                handleBubbleTap(tappedId);
+              }, DOUBLE_TAP_MS);
             }
           } else {
             lastTapRef.current = { id: null, time: 0 };

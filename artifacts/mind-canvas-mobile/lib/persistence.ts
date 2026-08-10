@@ -1,52 +1,130 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { BubbleData, StoredState, STORAGE_KEY, STORAGE_VERSION } from './bubbleTypes';
+import { Platform } from 'react-native';
+import { BubbleData, SaveMeta, StoredState, STORAGE_KEY, STORAGE_VERSION } from './bubbleTypes';
 
 // ── Cloud sync ─────────────────────────────────────────────────────────────────
 // The API server is the shared source of truth between web and mobile.
 // AsyncStorage keeps the offline warm cache; the cloud is canonical.
 
 function cloudUrl(): string {
+  // Explicit base URL wins. Local development sets this (via
+  // scripts/src/dev-local.ts) to http://<LAN-IP>:8080 so a phone, emulator or
+  // browser can reach the API server running on the dev machine — the
+  // EXPO_PUBLIC_DOMAIN path below always builds an https:// URL, which no local
+  // server serves.
+  const explicit = process.env.EXPO_PUBLIC_API_URL ?? '';
+  if (explicit) return `${explicit.replace(/\/+$/, '')}/api/map`;
+
   const domain = process.env.EXPO_PUBLIC_DOMAIN ?? '';
-  if (!domain) return '';
-  return `https://${domain}/api/map`;
+  if (domain) return `https://${domain}/api/map`;
+
+  // Published web build: the Expo bundle is served from the same host as the
+  // API (the mobile artifact lives at /mind-canvas-mobile/ alongside /api), so
+  // a same-origin URL needs no build-time configuration at all.
+  //
+  // This matters because EXPO_PUBLIC_* values are baked in at BUILD time and
+  // the production build previously received none — leaving a published app
+  // with no API URL whatsoever. A native build still needs
+  // EXPO_PUBLIC_API_URL set at build time; when it is missing, saving now
+  // fails loudly (see pushToCloud) rather than pretending to succeed.
+  if (Platform.OS === 'web' && typeof window !== 'undefined' && window.location?.origin) {
+    return `${window.location.origin}/api/map`;
+  }
+
+  return '';
 }
 
-export async function fetchFromCloud(): Promise<BubbleData[] | null> {
+// Set only when the deployment opts into M10's auth gate — see map.ts on the
+// server. Absent by default, matching the server's own off-by-default gate.
+const MAP_API_TOKEN = process.env.EXPO_PUBLIC_MAP_API_TOKEN;
+const authHeaders: HeadersInit | undefined = MAP_API_TOKEN
+  ? { Authorization: `Bearer ${MAP_API_TOKEN}` }
+  : undefined;
+
+/** A cloud map plus the save metadata that decides whether it is newer than ours. */
+export interface CloudSnapshot {
+  bubbles: BubbleData[];
+  meta: SaveMeta;
+}
+
+export async function fetchFromCloud(): Promise<CloudSnapshot | null> {
   const url = cloudUrl();
   if (!url) return null;
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 5000);
-    const res = await fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timer));
+    const res = await fetch(url, { signal: controller.signal, headers: authHeaders }).finally(() => clearTimeout(timer));
     if (!res.ok) return null;
     const data = await res.json();
     if (!data || !Array.isArray(data.bubbles) || data.bubbles.length === 0) return null;
-    return data.bubbles as BubbleData[];
+    // /api/map is a shared, unauthenticated endpoint (see M10) — its payload is
+    // not trustworthy just because it round-tripped through JSON. The import
+    // path already runs isValidBubble/isValidGraph on file uploads; the cloud
+    // path skipped both, so a malformed or cyclic payload landed straight in
+    // app state, where relativeLayer's `while (cur?.parentId)` walk would hang
+    // on a cycle. isValidBubble is a type guard, so `.every` also narrows the
+    // array's element type — no separate cast needed.
+    if (!data.bubbles.every(isValidBubble)) return null;
+    if (!isValidGraph(data.bubbles)) return null;
+    return {
+      bubbles: data.bubbles,
+      meta: {
+        name:    typeof data.name === 'string' ? data.name : undefined,
+        savedAt: isFiniteNumber(data.savedAt) ? data.savedAt : undefined,
+        savedBy: data.savedBy === 'web' || data.savedBy === 'mobile' ? data.savedBy : undefined,
+      },
+    };
   } catch {
     return null;
   }
 }
 
-export async function pushToCloud(bubbles: BubbleData[]): Promise<boolean> {
+/**
+ * Why a save failed, so the UI can say something true rather than generic.
+ *  - `not-configured` — this build has no API URL at all. Retrying will never
+ *    help; the user needs Export, and the build needs EXPO_PUBLIC_API_URL.
+ *  - `unreachable`    — the request never completed (offline, DNS, timeout).
+ *  - `rejected`       — the server answered, but refused the write.
+ */
+export type SaveFailure = 'not-configured' | 'unreachable' | 'rejected';
+export type PushResult = { ok: true } | { ok: false; reason: SaveFailure };
+
+/**
+ * Writes the map to the shared cloud row. Only ever called from an explicit
+ * "Save canvas" — ordinary editing no longer touches the network, so a save
+ * timestamp genuinely means "the user chose to publish this".
+ *
+ * A missing URL used to return `true` here, which made "Save canvas" report
+ * success and show a tick while writing nothing at all — the worst possible
+ * outcome for a save button. It is now an explicit failure with a reason the
+ * UI can explain.
+ */
+export async function pushToCloud(bubbles: BubbleData[], meta: SaveMeta): Promise<PushResult> {
   const url = cloudUrl();
-  if (!url) return true; // no server configured — treat as "ok" so no spurious toast
+  if (!url) return { ok: false, reason: 'not-configured' };
   try {
     const res = await fetch(url, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ version: STORAGE_VERSION, bubbles }),
+      headers: { 'Content-Type': 'application/json', ...authHeaders },
+      body: JSON.stringify({ version: STORAGE_VERSION, bubbles, ...meta }),
     });
-    return res.ok;
+    return res.ok ? { ok: true } : { ok: false, reason: 'rejected' };
   } catch {
-    return false;
+    return { ok: false, reason: 'unreachable' };
   }
 }
 
 // ── Local save / load ─────────────────────────────────────────────────────────
 
-export async function saveBubbles(bubbles: BubbleData[]): Promise<boolean> {
+/**
+ * Local draft autosave — still runs on every edit so nothing is lost if the
+ * app is killed. Deliberately separate from the cloud, which is explicit-only.
+ * `meta` carries the canvas name and the cloud save this draft descends from,
+ * so a relaunch still knows which remote save it has already seen.
+ */
+export async function saveBubbles(bubbles: BubbleData[], meta?: SaveMeta): Promise<boolean> {
   try {
-    const state: StoredState = { version: STORAGE_VERSION, bubbles };
+    const state: StoredState = { version: STORAGE_VERSION, bubbles, ...meta };
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     return true;
   } catch {
@@ -55,37 +133,71 @@ export async function saveBubbles(bubbles: BubbleData[]): Promise<boolean> {
 }
 
 export async function loadBubbles(initial: BubbleData[]): Promise<BubbleData[]> {
+  return (await loadStoredState(initial)).bubbles;
+}
+
+/**
+ * Like loadBubbles, but also returns stored save metadata. `hadStored`
+ * separates "nothing saved yet" (fresh install — silently adopt the cloud)
+ * from "stored data was unusable".
+ */
+export async function loadStoredState(
+  initial: BubbleData[],
+): Promise<{ bubbles: BubbleData[]; meta: SaveMeta; hadStored: boolean }> {
+  const empty = { bubbles: initial, meta: {} as SaveMeta, hadStored: false };
   try {
     const raw = await AsyncStorage.getItem(STORAGE_KEY);
-    if (!raw) return initial;
+    if (!raw) return empty;
     const parsed: StoredState = JSON.parse(raw);
     if (
       (parsed.version !== STORAGE_VERSION && parsed.version !== 1) ||
       !Array.isArray(parsed.bubbles) ||
       parsed.bubbles.length === 0
-    ) return initial;
-    return parsed.bubbles;
+    ) return empty;
+    // Reject a draft that is not safe to do geometry with. A previously
+    // poisoned session can leave non-finite coordinates here (they persist as
+    // `null` through JSON), and reloading them would immediately re-break the
+    // canvas — turning a one-off glitch into a crash on every launch.
+    if (!parsed.bubbles.every(isValidBubble) || !isValidGraph(parsed.bubbles)) return empty;
+    return {
+      bubbles: parsed.bubbles,
+      meta: { name: parsed.name, savedAt: parsed.savedAt, savedBy: parsed.savedBy },
+      hadStored: true,
+    };
   } catch {
-    return initial;
+    return empty;
   }
 }
 
 // ── Import validation ─────────────────────────────────────────────────────────
+
+/**
+ * A number that is safe to do geometry with. `typeof x === 'number'` is NOT
+ * sufficient: NaN and Infinity both pass it, and a single NaN coordinate is
+ * catastrophic here. It propagates through the layout into rendered sizes and
+ * positions (React Native throws on NaN layout values), and — because
+ * JSON.stringify turns NaN into `null` — it reaches the shared cloud map as a
+ * null coordinate, which every client then rejects wholesale, silently
+ * killing sync for all devices. Reject it at the door.
+ */
+function isFiniteNumber(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v);
+}
 
 function isValidBubble(b: unknown): b is BubbleData {
   if (!b || typeof b !== 'object') return false;
   const o = b as Record<string, unknown>;
   if (typeof o.id     !== 'string' || !o.id)     return false;
   if (typeof o.label  !== 'string')               return false;
-  if (typeof o.x      !== 'number')               return false;
-  if (typeof o.y      !== 'number')               return false;
+  if (!isFiniteNumber(o.x))                       return false;
+  if (!isFiniteNumber(o.y))                       return false;
   if (typeof o.color  !== 'string' || !o.color)   return false;
-  if (typeof o.depth  !== 'number' || o.depth < 0 || !Number.isFinite(o.depth)) return false;
+  if (!isFiniteNumber(o.depth) || o.depth < 0)    return false;
   // Optional fields — must have the correct type when present.
   if (o.parentId !== undefined && typeof o.parentId !== 'string') return false;
-  if (o.angle    !== undefined && typeof o.angle    !== 'number') return false;
-  if (o.radial   !== undefined && typeof o.radial   !== 'number') return false;
-  if (o.scale    !== undefined && typeof o.scale    !== 'number') return false;
+  if (o.angle    !== undefined && !isFiniteNumber(o.angle))       return false;
+  if (o.radial   !== undefined && !isFiniteNumber(o.radial))      return false;
+  if (o.scale    !== undefined && !isFiniteNumber(o.scale))       return false;
   return true;
 }
 
@@ -111,7 +223,23 @@ function isValidGraph(bubbles: BubbleData[]): boolean {
   return true;
 }
 
-export function parseBubbleJson(text: string): BubbleData[] | null {
+/** A validated import: the bubbles plus whatever name the file carried. */
+export interface ImportedCanvas {
+  bubbles: BubbleData[];
+  name?: string;
+}
+
+/**
+ * Parses and validates an exported canvas file.
+ *
+ * The name comes back with the bubbles because export writes it into the
+ * file — dropping it on the way in made a round trip lose the canvas title
+ * and leave imported content labelled with the previous map's name.
+ * `savedAt`/`savedBy` are deliberately not carried over: a file is not a
+ * cloud save, and adopting its timestamp would make this device think it had
+ * already seen a remote save it has not.
+ */
+export function parseBubbleJson(text: string): ImportedCanvas | null {
   try {
     const parsed: StoredState = JSON.parse(text);
     if (
@@ -121,7 +249,10 @@ export function parseBubbleJson(text: string): BubbleData[] | null {
     ) return null;
     if (!parsed.bubbles.every(isValidBubble)) return null;
     if (!isValidGraph(parsed.bubbles)) return null;
-    return parsed.bubbles;
+    return {
+      bubbles: parsed.bubbles,
+      name: typeof parsed.name === 'string' ? parsed.name : undefined,
+    };
   } catch {
     return null;
   }

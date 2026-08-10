@@ -8,6 +8,7 @@ import * as Haptics from 'expo-haptics';
 import { useBubbles } from '@/context/BubbleContext';
 import { PILLAR_COLORS, SCALE_OPTIONS } from '@/lib/bubbleLayout';
 import { BubbleData, MAX_DEPTH } from '@/lib/bubbleTypes';
+import { useSlideIn, slideOut } from '@/lib/animation';
 
 interface Props {
   onClose: () => void;
@@ -45,20 +46,18 @@ export default function AddBubblePanel({ onClose, initialParentId }: Props) {
 
   const inputRef = useRef<TextInput>(null);
 
-  // Slide up animation
-  const slideY = useRef(new Animated.Value(400)).current;
+  // Slide up animation. useSlideIn guarantees the resting position even when
+  // the animation is skipped — see lib/animation.ts.
+  const slideY = useSlideIn(400);
   useEffect(() => {
-    Animated.spring(slideY, {
-      toValue: 0, useNativeDriver: true, tension: 55, friction: 12,
-    }).start();
-    setTimeout(() => inputRef.current?.focus(), 350);
+    // Dismissing the panel quickly (e.g. tap-outside right after opening) can
+    // unmount this component before the 350ms delay elapses; without cleanup
+    // the timer still fires focus() on an unmounted TextInput.
+    const t = setTimeout(() => inputRef.current?.focus(), 350);
+    return () => clearTimeout(t);
   }, []);
 
-  const dismiss = () => {
-    Animated.timing(slideY, {
-      toValue: 400, duration: 220, useNativeDriver: true,
-    }).start(onClose);
-  };
+  const dismiss = () => slideOut(slideY, 400, onClose);
 
   const parent = parentId ? byId[parentId] : null;
   const atMax  = !!parent && parent.depth >= MAX_DEPTH;

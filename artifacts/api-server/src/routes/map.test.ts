@@ -162,9 +162,11 @@ test(
   async () => {
     // Use a payload distinct from the cold-start seed so we can be sure the
     // GET response comes from latestKnown set by PUT, not from the disk cache.
+    // Must be a VALID map: PUT now rejects malformed bodies with 400 before
+    // the write path runs at all, so a shape-only fixture would test nothing.
     const payload = {
       version: 2,
-      bubbles: [{ id: 'root', label: 'write-behind test', children: [] }],
+      bubbles: [{ id: 'root', label: 'write-behind test', x: 0, y: 0, color: '#aaa', depth: 0 }],
     };
 
     const server = await startServer();
@@ -200,3 +202,136 @@ test(
     }
   },
 );
+
+// ---------------------------------------------------------------------------
+// PUT body validation
+//
+// /api/map holds ONE row shared by every device. An accepted bad write does
+// not degrade a single client — it replaces everyone's canvas, and because
+// both clients validate on the way in, they then silently ignore the shared
+// map and strand themselves on local drafts with no error anywhere. So every
+// case below must come back 400 and leave the stored map untouched.
+//
+// The DB is unreachable in this file, which is exactly the right condition:
+// a rejected body must never reach latestKnown or the disk cache either, so
+// asserting that GET still returns the LAST GOOD map afterwards proves the
+// rejection happened before any state was touched.
+// ---------------------------------------------------------------------------
+
+const GOOD_BUBBLE = { id: 'root', label: 'valid', x: 0, y: 0, color: '#aaa', depth: 0 };
+
+const REJECTED_BODIES: [name: string, body: unknown][] = [
+  ['a non-object body',            [1, 2, 3]],
+  ['a null body',                  null],
+  ['an unknown version',           { version: 99, bubbles: [GOOD_BUBBLE] }],
+  ['a missing bubbles array',      { version: 2 }],
+  ['bubbles that is not an array', { version: 2, bubbles: 'nope' }],
+  // Every client reads an empty array as "nothing saved" and ignores it, so
+  // storing one would wipe the shared map while reporting success.
+  ['an empty bubbles array',       { version: 2, bubbles: [] }],
+  ['a bubble missing required fields', { version: 2, bubbles: [{ id: 'x', label: 'no coords' }] }],
+  // JSON.stringify turns NaN into null — this is the exact shape a poisoned
+  // client sends, and the one that silently killed sync for every device.
+  ['a null coordinate (how NaN arrives over the wire)',
+    { version: 2, bubbles: [{ ...GOOD_BUBBLE, x: null }] }],
+  ['a duplicate bubble id', {
+    version: 2,
+    bubbles: [GOOD_BUBBLE, { ...GOOD_BUBBLE, label: 'clash' }],
+  }],
+  ['an orphaned parentId', {
+    version: 2,
+    bubbles: [{ ...GOOD_BUBBLE, id: 'kid', parentId: 'ghost' }],
+  }],
+  // A cycle hangs the clients' `while (cur?.parentId)` breadcrumb walk.
+  ['a parent cycle', {
+    version: 2,
+    bubbles: [
+      { ...GOOD_BUBBLE, id: 'a', parentId: 'b' },
+      { ...GOOD_BUBBLE, id: 'b', parentId: 'a' },
+    ],
+  }],
+  ['a non-numeric savedAt', {
+    version: 2, bubbles: [GOOD_BUBBLE], savedAt: 'yesterday',
+  }],
+  ['an unrecognised savedBy', {
+    version: 2, bubbles: [GOOD_BUBBLE], savedBy: 'desktop',
+  }],
+  ['a non-string name', {
+    version: 2, bubbles: [GOOD_BUBBLE], name: { first: 'nope' },
+  }],
+];
+
+test('PUT /api/map rejects malformed bodies with 400 and preserves the stored map', async () => {
+  const server = await startServer();
+  try {
+    // Establish a known-good map first. The DB is down, so this returns 500 —
+    // but latestKnown/disk cache now hold it, which is what GET falls back to
+    // and therefore what a bad write would have to clobber to do damage.
+    const good = {
+      version: 2,
+      bubbles: [{ ...GOOD_BUBBLE, label: 'the good map' }],
+      name: 'Keep me',
+      savedAt: 1_700_000_000_000,
+      savedBy: 'web',
+    };
+    await put(server, '/api/map', good);
+
+    for (const [name, body] of REJECTED_BODIES) {
+      const res = await put(server, '/api/map', body);
+      assert.equal(res.status, 400, `${name}: expected 400 but got ${res.status}`);
+      const resBody = res.body as Record<string, unknown>;
+      assert.equal(resBody['ok'], false, `${name}: body should have ok: false`);
+      assert.equal(
+        typeof resBody['error'], 'string',
+        `${name}: response must explain WHY, so a client can tell a bad request from a broken server`,
+      );
+
+      const after = await get(server, '/api/map');
+      assert.deepEqual(
+        after.body, good,
+        `${name}: the stored map must be untouched by a rejected write`,
+      );
+    }
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('PUT /api/map accepts a well-formed body and strips unknown top-level keys', async () => {
+  const server = await startServer();
+  try {
+    await put(server, '/api/map', {
+      version: 2,
+      bubbles: [
+        { ...GOOD_BUBBLE, id: 'p' },
+        { id: 'c', parentId: 'p', label: 'child', x: 10, y: 20, color: '#bbb', depth: 1,
+          angle: 1.5, radial: 0.5, scale: 1.2 },
+      ],
+      name: 'Accepted',
+      savedAt: 1_700_000_000_001,
+      savedBy: 'mobile',
+      // Not part of the contract — must not be persisted into the shared row.
+      injected: 'should not survive',
+    });
+
+    // DB is down, so this is served from latestKnown — i.e. exactly what the
+    // route decided to store.
+    const { body } = await get(server, '/api/map');
+    const stored = body as Record<string, unknown>;
+    assert.equal(stored['name'], 'Accepted');
+    assert.equal(stored['savedBy'], 'mobile');
+    assert.equal(stored['savedAt'], 1_700_000_000_001);
+    assert.equal((stored['bubbles'] as unknown[]).length, 2);
+    assert.equal(
+      'injected' in stored, false,
+      'unknown keys must not be written into the shared map row',
+    );
+    // Optional per-bubble fields must survive intact — they are the layout.
+    const child = (stored['bubbles'] as Record<string, unknown>[])[1];
+    assert.equal(child['angle'], 1.5);
+    assert.equal(child['radial'], 0.5);
+    assert.equal(child['scale'], 1.2);
+  } finally {
+    await closeServer(server);
+  }
+});

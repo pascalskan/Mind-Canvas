@@ -27,6 +27,16 @@ if (!basePath) {
   );
 }
 
+// In production the Replit path router serves the web build at `/` and the API
+// server at `/api` on the same origin, so the app's `SYNC_URL = '/api/map'` is a
+// same-origin request. The dev server has no such router, so without a proxy
+// `/api/map` 404s and cloud sync appears permanently broken locally.
+//
+// `scripts/src/dev-local.ts` sets API_PROXY_TARGET. When it is absent (a bare
+// `vite` run, or the production build) no proxy is registered and behaviour is
+// unchanged.
+const apiProxyTarget = process.env.API_PROXY_TARGET;
+
 export default defineConfig({
   base: basePath,
   plugins: [
@@ -72,6 +82,16 @@ export default defineConfig({
     fs: {
       strict: true,
     },
+    ...(apiProxyTarget
+      ? {
+          proxy: {
+            '/api': {
+              target: apiProxyTarget,
+              changeOrigin: true,
+            },
+          },
+        }
+      : {}),
   },
   preview: {
     port,
