@@ -72,7 +72,7 @@ export default function SettingsPanel({ onClose }: Props) {
   const {
     canvasName, setCanvasName, saving, saveCanvas, saveError,
     hasUnsavedChanges, savedMeta, syncState,
-    exportMap, importMap, clearCanvas,
+    exportMap, importMap, clearCanvas, noteInteraction,
   } = useBubbles();
   const insets = useSafeAreaInsets();
 
@@ -144,7 +144,7 @@ export default function SettingsPanel({ onClose }: Props) {
         <TextInput
           style={styles.input}
           value={canvasName}
-          onChangeText={setCanvasName}
+          onChangeText={t => { noteInteraction(); setCanvasName(t); }}
           placeholder="Untitled canvas"
           placeholderTextColor="#bbb"
           maxLength={60}

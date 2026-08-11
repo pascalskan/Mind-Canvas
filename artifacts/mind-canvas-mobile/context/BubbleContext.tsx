@@ -93,6 +93,11 @@ interface BubbleContextValue {
   batchUpdatePositions: (updates: { id: string; x: number; y: number; angle?: number; radial?: number }[]) => void;
   /** Re-derives canonical x/y for every non-root bubble from its angle/radial. */
   resyncPositions: () => void;
+  /**
+   * Records that the user is actively working, so the periodic check does not
+   * adopt a remote save out from under them before their first edit lands.
+   */
+  noteInteraction: () => void;
 
   exportMap: () => Promise<void>;
   importMap: () => Promise<void>;
@@ -122,6 +127,14 @@ export function useBubbles() {
 // at any layer size), so syncPositionsFromAngleRadial only needs to run when
 // mobile ingests bubbles it didn't compute itself: cloud bootstrap and the
 // cross-device poll merge, below. No per-focus-change effect is needed at all.
+
+/**
+ * How long the user must have been idle before a newer remote save is adopted
+ * without asking. Long enough to cover "reaching for the canvas but hasn't
+ * changed anything yet"; short enough that leaving the app alone still picks
+ * work up automatically.
+ */
+const IDLE_BEFORE_ADOPT_MS = 8_000;
 
 const INITIAL = buildInitialBubbles();
 
@@ -377,7 +390,7 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
       //    makes saving on one device simply show up on the other.
       //  • Unsaved changes  → ask. This is the only case where adopting could
       //    destroy something, so it stays a decision.
-      if (dirtyRef.current) {
+      if (dirtyRef.current || Date.now() - lastInteractionRef.current < IDLE_BEFORE_ADOPT_MS) {
         setPendingSave(cloud);
         return;
       }
@@ -415,6 +428,18 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
   // Readable from the 30 s check, whose closure is created once at mount.
   const dirtyRef = useRef(hasUnsavedChanges);
   dirtyRef.current = hasUnsavedChanges;
+
+  // ── Recent activity ───────────────────────────────────────────────────────
+  //
+  // "Nothing unsaved" is not the same as "nobody is working". A check landing
+  // between the user touching the canvas and their first actual change still
+  // sees a clean signature, so it would adopt the remote map out from under
+  // someone mid-thought. Requiring a short idle period as well closes that
+  // window; when the user IS active we fall back to asking.
+  const lastInteractionRef = useRef(0);
+  const noteInteraction = useCallback(() => {
+    lastInteractionRef.current = Date.now();
+  }, []);
 
   // When the server was last reached, and what it held. Drives the sync line in
   // Settings.
@@ -689,7 +714,7 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
     pendingSave, acceptPendingSave, dismissPendingSave,
     setFocusedId, setEditSelection, enterEditMode, cancelEditMode, saveEditMode,
     addBubble, deleteBubble, renameBubble, recolorBubble, resizeBubble,
-    updateBubblePosition, batchUpdatePositions, resyncPositions,
+    updateBubblePosition, batchUpdatePositions, resyncPositions, noteInteraction,
     exportMap, importMap, clearCanvas,
   }), [
     bubbles, focusedId, editMode, editSelection, byId, cloudSaveOk,
@@ -697,7 +722,7 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
     pendingSave, acceptPendingSave, dismissPendingSave,
     enterEditMode, cancelEditMode, saveEditMode,
     addBubble, deleteBubble, renameBubble, recolorBubble, resizeBubble,
-    updateBubblePosition, batchUpdatePositions, resyncPositions,
+    updateBubblePosition, batchUpdatePositions, resyncPositions, noteInteraction,
     exportMap, importMap, clearCanvas,
   ]);
 

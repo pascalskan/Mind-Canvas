@@ -25,6 +25,14 @@ import {
 
 const SYNC_URL = '/api/map';
 
+/**
+ * How long the user must have been idle before a newer remote save is adopted
+ * without asking. Long enough to cover "reaching for the canvas but hasn't
+ * changed anything yet"; short enough that leaving the tab alone still picks
+ * work up automatically.
+ */
+const IDLE_BEFORE_ADOPT_MS = 8_000;
+
 /** A cloud map plus the save metadata that decides whether it is newer than ours. */
 export interface CloudSnapshot {
   bubbles: BubbleData[];
@@ -283,6 +291,30 @@ export function useBubbleState(
   const dirtyRef = useRef(hasUnsavedChanges);
   dirtyRef.current = hasUnsavedChanges;
 
+  // ── Recent activity ───────────────────────────────────────────────────────
+  //
+  // "Nothing unsaved" is not the same as "nobody is working". A check that
+  // lands in the moment between the user reaching for the canvas and their
+  // first change still sees a clean signature — so it would adopt the remote
+  // map out from under someone who is mid-thought, which is exactly what the
+  // prompt exists to prevent. Requiring a short idle period as well closes
+  // that window; when the user IS active we fall back to asking.
+  const lastInteractionRef = useRef(0);
+  useEffect(() => {
+    const note = () => { lastInteractionRef.current = Date.now(); };
+    // Capture phase, so this still records even where a handler stops
+    // propagation (the canvas does this in several places).
+    const opts = { capture: true, passive: true } as const;
+    for (const type of ['pointerdown', 'keydown', 'wheel'] as const) {
+      window.addEventListener(type, note, opts);
+    }
+    return () => {
+      for (const type of ['pointerdown', 'keydown', 'wheel'] as const) {
+        window.removeEventListener(type, note, opts);
+      }
+    };
+  }, []);
+
   // When the server was last reached, and what it held. Drives the sync line in
   // Settings — until this existed, nothing anywhere answered "are my two
   // devices on the same canvas?", which is the one question a manual-save model
@@ -376,7 +408,7 @@ export function useBubbleState(
       //    makes saving on one device simply show up on the other.
       //  • Unsaved changes  → ask. This is the only case where adopting could
       //    destroy something, so it stays a decision.
-      if (dirtyRef.current) {
+      if (dirtyRef.current || Date.now() - lastInteractionRef.current < IDLE_BEFORE_ADOPT_MS) {
         setPendingSave(cloud);
         return;
       }

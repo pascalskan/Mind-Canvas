@@ -263,3 +263,85 @@ describe('a newer save is offered, never applied', () => {
     }
   });
 });
+
+// ─── Adopting without asking ──────────────────────────────────────────────────
+//
+// A newer save is taken silently when there is nothing here to protect, and
+// only then. "Nothing to protect" means BOTH no unsaved changes AND no recent
+// activity: a check that lands between the user reaching for the canvas and
+// their first edit still sees a clean signature, and adopting there would swap
+// the map out from under someone mid-thought.
+
+describe('a newer save is adopted only when the canvas is clean AND idle', () => {
+  /** Runs the periodic check to completion under fake timers. */
+  async function runPollCycles(cycles = 40) {
+    for (let i = 0; i < cycles; i++) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+        await Promise.resolve();
+      });
+    }
+  }
+
+  /**
+   * Starts the hook already in step with the cloud, so the STARTUP check has
+   * nothing to offer and the periodic check is the only thing under test.
+   * Returns a function that publishes a newer remote save.
+   */
+  function startInSync() {
+    const seen = 1_000_000;
+    seedLocalDraft(seen);
+    let body: unknown = cloudPayload(seen, 'Root');
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((_u: string, init?: RequestInit) =>
+      init?.method === 'PUT'
+        ? Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) })
+        : Promise.resolve({ ok: true, json: () => Promise.resolve(body) }),
+    ));
+    return () => { body = cloudPayload(seen + 60_000, 'Remote root'); };
+  }
+
+  it('adopts silently when nothing is unsaved and the user is idle', async () => {
+    vi.useFakeTimers();
+    try {
+      const publishNewer = startInSync();
+      const { result } = renderHook(() => useBubbleState(SEED));
+      await runPollCycles(2);
+      expect(result.current.pendingSave).toBeNull();   // in step to begin with
+
+      publishNewer();
+      await runPollCycles(40);
+
+      expect(result.current.bubbles.find(b => b.id === 'r0')?.label).toBe('Remote root');
+      expect(result.current.pendingSave).toBeNull();   // taken, never asked
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('asks instead of adopting when the user interacted moments ago', async () => {
+    vi.useFakeTimers();
+    try {
+      const publishNewer = startInSync();
+      const { result } = renderHook(() => useBubbleState(SEED));
+      await runPollCycles(2);
+
+      publishNewer();
+      // Sit idle almost until the check fires, THEN touch the canvas — so the
+      // check lands a second after the user reached for it. The signature is
+      // still clean at that instant, which is exactly the window that used to
+      // let the remote map replace work the user had only just started.
+      await runPollCycles(27);
+      await act(async () => {
+        window.dispatchEvent(new Event('pointerdown'));
+        await Promise.resolve();
+      });
+      await runPollCycles(3);
+
+      // Offered, not applied.
+      expect(result.current.pendingSave).not.toBeNull();
+      expect(result.current.bubbles.find(b => b.id === 'r0')?.label).toBe('Root');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

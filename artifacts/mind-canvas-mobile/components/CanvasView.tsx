@@ -98,7 +98,7 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: P
   const {
     bubbles, focusedId, editMode, editSelection, byId,
     setFocusedId, setEditSelection, updateBubblePosition,
-    batchUpdatePositions, resyncPositions,
+    batchUpdatePositions, resyncPositions, noteInteraction,
   } = useBubbles();
 
   // useWindowDimensions (not a module-level Dimensions.get() snapshot) so a
@@ -469,6 +469,9 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: P
       onMoveShouldSetPanResponder:  () => true,
 
       onPanResponderGrant(evt) {
+        // Any touch on the canvas counts as "actively working", so the 30s
+        // check will not swap the map out from under a gesture in progress.
+        noteInteraction();
         cancelAnimationFrame(animFrameRef.current);
         clearLongPress();
 
