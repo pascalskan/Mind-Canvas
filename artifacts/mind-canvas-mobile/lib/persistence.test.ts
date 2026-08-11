@@ -183,8 +183,49 @@ describe('pushToCloud', () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal('fetch', fetchMock);
 
-    expect(await pushToCloud(SAMPLE, { savedAt: 1 })).toEqual({ ok: true });
+    // No readable body on this mock, so the save still succeeds and falls back
+    // to the caller's own timestamp rather than reporting a failure.
+    expect(await pushToCloud(SAMPLE, { savedAt: 1 })).toEqual({ ok: true, savedAt: 1 });
     expect(fetchMock.mock.calls[0][0]).toBe('https://example.test/api/map');
+  });
+
+  // The published web bundle is served from the same host as the API. The
+  // domain baked in at BUILD time is not necessarily that host, and when the
+  // two differ the app reads and writes a completely different server from the
+  // website — both sides save happily, both report themselves in sync, and
+  // neither ever sees the other's work. The origin is right by construction.
+  it('ignores a stale baked-in domain on web and uses the page origin', async () => {
+    setPlatform('web');
+    process.env['EXPO_PUBLIC_DOMAIN'] = 'some-old-build-domain.example';
+    vi.stubGlobal('window', { location: { origin: 'https://where-the-user-actually-is.test' } });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true }) });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await pushToCloud(SAMPLE, { savedAt: 1 });
+    expect(fetchMock.mock.calls[0][0]).toBe('https://where-the-user-actually-is.test/api/map');
+  });
+
+  it('still uses the baked-in domain on native, which has no origin', async () => {
+    setPlatform('ios');
+    process.env['EXPO_PUBLIC_DOMAIN'] = 'published.example';
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true }) });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await pushToCloud(SAMPLE, {});
+    expect(fetchMock.mock.calls[0][0]).toBe('https://published.example/api/map');
+  });
+
+  // savedAt orders saves across devices. Taking it from the SAVING device's
+  // clock meant two devices whose clocks disagreed could never see each other's
+  // work: a phone running behind published saves the laptop read as older than
+  // its own and silently ignored.
+  it('adopts the timestamp the server assigned, not the local clock', async () => {
+    process.env['EXPO_PUBLIC_API_URL'] = 'http://localhost:8080';
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, json: async () => ({ ok: true, savedAt: 9_999 }),
+    }));
+    const result = await pushToCloud(SAMPLE, { savedAt: 1 });
+    expect(result).toEqual({ ok: true, savedAt: 9_999 });
   });
 
   it('prefers an explicit EXPO_PUBLIC_API_URL and strips trailing slashes', async () => {

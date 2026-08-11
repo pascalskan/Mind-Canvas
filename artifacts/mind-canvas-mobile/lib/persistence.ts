@@ -6,30 +6,36 @@ import { BubbleData, SaveMeta, StoredState, STORAGE_KEY, STORAGE_VERSION } from 
 // The API server is the shared source of truth between web and mobile.
 // AsyncStorage keeps the offline warm cache; the cloud is canonical.
 
-function cloudUrl(): string {
-  // Explicit base URL wins. Local development sets this (via
-  // scripts/src/dev-local.ts) to http://<LAN-IP>:8080 so a phone, emulator or
-  // browser can reach the API server running on the dev machine — the
-  // EXPO_PUBLIC_DOMAIN path below always builds an https:// URL, which no local
-  // server serves.
+export function cloudUrl(): string {
+  // 1. An explicit base URL always wins. Local development sets this (via
+  //    scripts/src/dev-local.ts) to http://<LAN-IP>:8080 so a phone, emulator
+  //    or browser can reach the API server running on the dev machine.
   const explicit = process.env.EXPO_PUBLIC_API_URL ?? '';
   if (explicit) return `${explicit.replace(/\/+$/, '')}/api/map`;
 
-  const domain = process.env.EXPO_PUBLIC_DOMAIN ?? '';
-  if (domain) return `https://${domain}/api/map`;
-
-  // Published web build: the Expo bundle is served from the same host as the
-  // API (the mobile artifact lives at /mind-canvas-mobile/ alongside /api), so
-  // a same-origin URL needs no build-time configuration at all.
+  // 2. On the web, the page's own origin beats anything baked in at build
+  //    time. The Expo bundle is served from the same host as the API (the
+  //    mobile artifact lives at /mind-canvas-mobile/ alongside /api), so the
+  //    origin is correct BY CONSTRUCTION — it is wherever the user actually
+  //    loaded the app from.
   //
-  // This matters because EXPO_PUBLIC_* values are baked in at BUILD time and
-  // the production build previously received none — leaving a published app
-  // with no API URL whatsoever. A native build still needs
-  // EXPO_PUBLIC_API_URL set at build time; when it is missing, saving now
-  // fails loudly (see pushToCloud) rather than pretending to succeed.
+  //    This deliberately takes priority over EXPO_PUBLIC_DOMAIN. That value is
+  //    frozen into the bundle when the app is BUILT, and the build resolves it
+  //    from REPLIT_DEV_DOMAIN / REPLIT_INTERNAL_APP_DOMAIN — which is not
+  //    necessarily the host the app is later served from. When those differ,
+  //    the app reads and writes a completely different server from the
+  //    website: both sides save happily, both report themselves in sync, and
+  //    neither ever sees the other's work. That is a silent split-brain, and
+  //    checking the origin first makes it impossible on the web.
   if (Platform.OS === 'web' && typeof window !== 'undefined' && window.location?.origin) {
     return `${window.location.origin}/api/map`;
   }
+
+  // 3. Native builds have no origin to fall back on, so they need the domain
+  //    baked in. When it is missing, saving fails loudly (see pushToCloud)
+  //    rather than pretending to succeed.
+  const domain = process.env.EXPO_PUBLIC_DOMAIN ?? '';
+  if (domain) return `https://${domain}/api/map`;
 
   return '';
 }
@@ -87,7 +93,10 @@ export async function fetchFromCloud(): Promise<CloudSnapshot | null> {
  *  - `rejected`       — the server answered, but refused the write.
  */
 export type SaveFailure = 'not-configured' | 'unreachable' | 'rejected';
-export type PushResult = { ok: true } | { ok: false; reason: SaveFailure };
+export type PushResult =
+  /** `savedAt` is the timestamp the SERVER assigned — adopt it, don't reuse the local clock. */
+  | { ok: true; savedAt: number }
+  | { ok: false; reason: SaveFailure };
 
 /**
  * Writes the map to the shared cloud row. Only ever called from an explicit
@@ -108,7 +117,19 @@ export async function pushToCloud(bubbles: BubbleData[], meta: SaveMeta): Promis
       headers: { 'Content-Type': 'application/json', ...authHeaders },
       body: JSON.stringify({ version: STORAGE_VERSION, bubbles, ...meta }),
     });
-    return res.ok ? { ok: true } : { ok: false, reason: 'rejected' };
+    if (!res.ok) return { ok: false, reason: 'rejected' };
+    // Prefer the timestamp the server assigned. An unreadable or bodyless
+    // response must NOT fail an otherwise-successful save, so fall back to our
+    // own clock rather than letting a parse error escape to the outer catch
+    // and report the write as unreachable.
+    let stamped = meta.savedAt ?? Date.now();
+    try {
+      const body = await res.json();
+      if (body && typeof body.savedAt === 'number' && Number.isFinite(body.savedAt)) {
+        stamped = body.savedAt;
+      }
+    } catch { /* no readable body — keep the fallback */ }
+    return { ok: true, savedAt: stamped };
   } catch {
     return { ok: false, reason: 'unreachable' };
   }

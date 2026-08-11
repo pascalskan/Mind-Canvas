@@ -103,7 +103,10 @@ export type SyncState =
   | { kind: 'in-sync';  lastChecked: number };
 
 export type SaveFailure = 'not-configured' | 'unreachable' | 'rejected';
-export type PushResult = { ok: true } | { ok: false; reason: SaveFailure };
+export type PushResult =
+  /** `savedAt` is the timestamp the SERVER assigned — adopt it, don't reuse the local clock. */
+  | { ok: true; savedAt: number }
+  | { ok: false; reason: SaveFailure };
 
 /**
  * Writes the map to the shared cloud row. Only ever called from an explicit
@@ -117,7 +120,19 @@ async function pushToCloud(bubbles: BubbleData[], meta: SaveMeta): Promise<PushR
       headers: { 'Content-Type': 'application/json', ...authHeaders },
       body: JSON.stringify({ version: 2, bubbles, ...meta }),
     });
-    return res.ok ? { ok: true } : { ok: false, reason: 'rejected' };
+    if (!res.ok) return { ok: false, reason: 'rejected' };
+    // Prefer the timestamp the server assigned. An unreadable or bodyless
+    // response must NOT fail an otherwise-successful save, so fall back to our
+    // own clock rather than letting a parse error escape to the outer catch
+    // and report the write as unreachable.
+    let stamped = meta.savedAt ?? Date.now();
+    try {
+      const body = await res.json();
+      if (body && typeof body.savedAt === 'number' && Number.isFinite(body.savedAt)) {
+        stamped = body.savedAt;
+      }
+    } catch { /* no readable body — keep the fallback */ }
+    return { ok: true, savedAt: stamped };
   } catch {
     return { ok: false, reason: 'unreachable' };
   }
@@ -474,9 +489,12 @@ export function useBubbleState(
   const saveCanvas = useCallback(async (): Promise<PushResult> => {
     setSaving(true);
     savingRef.current = true;
-    const savedAt = Date.now();
-    const meta: SaveMeta = { name: canvasName.trim() || undefined, savedAt, savedBy: 'web' };
+    const meta: SaveMeta = { name: canvasName.trim() || undefined, savedBy: 'web' };
     const result = await pushToCloud(bubblesRef.current, meta);
+    // The server decides the save time; everything below records ITS value so
+    // this device and every other one order saves by the same clock.
+    const savedAt = result.ok ? result.savedAt : 0;
+    const savedMetaFromServer: SaveMeta = { ...meta, savedAt };
 
     if (result.ok) {
       // Mirror the new baseline into the local draft FIRST. Advancing
@@ -484,16 +502,16 @@ export function useBubbleState(
       // write failed, a reload would read the older stored savedAt and the
       // browser would then prompt about its own save. Only move the baseline
       // once it is actually recorded.
-      const local = saveBubbles(bubblesRef.current, meta);
+      const local = saveBubbles(bubblesRef.current, savedMetaFromServer);
       setLastSave(local);
       if (local.ok) {
         lastSeenSavedAtRef.current = savedAt;
-        setSavedMeta(meta);
+        setSavedMeta(savedMetaFromServer);
         setBaselineSignature(canvasSignature(bubblesRef.current, meta.name));
         // We just became the newest save, so the status line should say so
         // immediately rather than waiting up to 30s for the next check.
         setRemoteSavedAt(savedAt);
-        setLastChecked(savedAt);
+        setLastChecked(Date.now());
       }
     }
 

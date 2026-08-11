@@ -183,8 +183,12 @@ export default function MainScreen() {
         </View>
       )}
 
-      {/* ── Toolbar — hidden while Add panel is open ─────────────────────── */}
-      {!showAdd && (
+      {/* ── Toolbar — hidden while any sheet is open ─────────────────────────
+          Settings has to hide it too, not just Add. The sheet slides up from
+          the bottom into exactly the space these buttons occupy, so Edit and
+          Add bubble sat on top of it, covering Erase canvas and taking the
+          taps meant for it. */}
+      {!showAdd && !showSettings && (
         <View style={[styles.toolbar, { bottom: bottomInset + 16 }]} pointerEvents="box-none">
           {editMode ? (
             <View style={styles.toolbarRow} pointerEvents="auto">

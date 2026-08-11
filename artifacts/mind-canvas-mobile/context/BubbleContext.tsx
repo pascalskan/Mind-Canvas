@@ -277,9 +277,12 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
   const saveCanvas = useCallback(async (): Promise<PushResult> => {
     setSaving(true);
     savingRef.current = true;
-    const savedAt = Date.now();
-    const meta = { name: canvasName.trim() || undefined, savedAt, savedBy: 'mobile' as const };
+    const meta = { name: canvasName.trim() || undefined, savedBy: 'mobile' as const };
     const result = await pushToCloud(bubblesRef.current, meta);
+    // The server decides the save time; everything below records ITS value so
+    // this device and every other one order saves by the same clock.
+    const savedAt = result.ok ? result.savedAt : 0;
+    const savedMetaFromServer: SaveMeta = { ...meta, savedAt };
 
     if (result.ok) {
       // Mirror the new baseline into the local draft FIRST. Advancing
@@ -287,15 +290,15 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
       // write failed, a relaunch would read the older stored savedAt and the
       // device would then prompt about its own save. Only move the baseline
       // once it is actually recorded.
-      const localOk = await saveBubbles(bubblesRef.current, meta);
+      const localOk = await saveBubbles(bubblesRef.current, savedMetaFromServer);
       if (localOk) {
         lastSeenSavedAtRef.current = savedAt;
-        setSavedMeta(meta);
+        setSavedMeta(savedMetaFromServer);
         setBaselineSignature(canvasSignature(bubblesRef.current, meta.name));
         // We just became the newest save, so say so immediately rather than
         // waiting up to 30s for the next check.
         setRemoteSavedAt(savedAt);
-        setLastChecked(savedAt);
+        setLastChecked(Date.now());
       }
     }
 

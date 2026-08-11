@@ -2171,7 +2171,11 @@ export default function MindCanvas() {
       />
 
       {/* Buttons */}
+      {/* Hidden while Settings is open. On a short or narrow window the panel
+          reaches down into this corner, so these buttons sat on top of it and
+          took the taps meant for the panel's own controls. */}
       <div className="absolute bottom-6 right-6 z-50 flex gap-3 pointer-events-auto"
+        style={{ display: showSettings ? 'none' : undefined }}
         onPointerDown={e => e.stopPropagation()}>
         {editMode ? (
           <>

@@ -90,7 +90,11 @@ describe('saveCanvas', () => {
     expect(body.bubbles.find((b: BubbleData) => b.id === 'r0').label).toBe('Draft');
     expect(body.name).toBe('Trip planning');
     expect(body.savedBy).toBe('web');
-    expect(typeof body.savedAt).toBe('number');
+    // savedAt is deliberately NOT sent. The server stamps it, so every device
+    // orders saves by one clock — see the map.ts PUT handler. Sending a local
+    // reading is what let two devices with skewed clocks ignore each other's
+    // work while both reported themselves in sync.
+    expect(body.savedAt).toBeUndefined();
   });
 
   it('reports failure without throwing when the server rejects the write', async () => {
