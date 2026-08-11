@@ -185,6 +185,29 @@ function radialBand(pr: number, cr: number, n: number, maxSiblingR: number = cr)
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 
+/**
+ * Whether `target` sits inside a scrollable element below `root` — i.e. whether
+ * this gesture belongs to a panel rather than to the canvas.
+ *
+ * Both the wheel and the touch handlers need this. The canvas suppresses
+ * default scrolling so a drag pans instead of scrolling the page, but doing
+ * that indiscriminately also swallows scrolling INSIDE the panels that sit on
+ * top of it — which made the Add panel's lower half unreachable, since the
+ * wheel zoomed the canvas instead of moving the list.
+ */
+function isInScrollable(target: EventTarget | null, root: Element): boolean {
+  let node = target as Element | null;
+  while (node && node !== root) {
+    // Text nodes and SVG children have no computed overflow worth reading.
+    if (node instanceof HTMLElement) {
+      const ov = window.getComputedStyle(node).overflowY;
+      if ((ov === 'scroll' || ov === 'auto') && node.scrollHeight > node.clientHeight) return true;
+    }
+    node = node.parentElement;
+  }
+  return false;
+}
+
 function buildBubbles(): BubbleData[] {
   const out: BubbleData[] = [];
   let counter = 0;
@@ -1554,6 +1577,13 @@ export default function MindCanvas() {
     const el = containerRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
+      // A wheel over a scrollable panel belongs to that panel, not the camera.
+      // preventDefault() used to run unconditionally here, so scrolling inside
+      // the Add or Settings panel silently zoomed the canvas instead and the
+      // panel's own content could never be reached. The touch path already
+      // made this distinction; the wheel path did not.
+      if (isInScrollable(e.target, el)) return;
+
       e.preventDefault();
       // Zoom stays available in edit mode. Blocking it meant you could not get
       // close enough to work on a small bubble, nor far enough out to see what
@@ -1590,18 +1620,9 @@ export default function MindCanvas() {
         e.preventDefault();
         return;
       }
-      // Walk up from the touch target to find a scrollable ancestor that is
-      // not the canvas container itself.
-      let inScrollable = false;
-      let node = e.target as Element | null;
-      while (node && node !== el) {
-        const ov = window.getComputedStyle(node).overflowY;
-        if ((ov === 'scroll' || ov === 'auto') && node.scrollHeight > node.clientHeight) {
-          inScrollable = true;
-          break;
-        }
-        node = node.parentElement;
-      }
+      // Shared with the wheel handler so both agree on what counts as "this
+      // gesture belongs to a panel, not the canvas".
+      const inScrollable = isInScrollable(e.target, el);
       touchState.inScrollable = inScrollable;
       // Suppress the event for canvas-background touches so iOS never scrolls
       // the page during a one-finger pan.
@@ -2175,7 +2196,11 @@ export default function MindCanvas() {
           reaches down into this corner, so these buttons sat on top of it and
           took the taps meant for the panel's own controls. */}
       <div className="absolute bottom-6 right-6 z-50 flex gap-3 pointer-events-auto"
-        style={{ display: showSettings ? 'none' : undefined }}
+        // Hidden whenever a panel is open. Every one of these overlays reaches
+        // into this corner, so leaving the buttons up put Edit and Add bubble
+        // on top of the panel's own controls — covering them and taking their
+        // clicks. Settings alone was not enough; the Add panel is taller.
+        style={{ display: (showSettings || showAddPanel || quickCreate) ? 'none' : undefined }}
         onPointerDown={e => e.stopPropagation()}>
         {editMode ? (
           <>
