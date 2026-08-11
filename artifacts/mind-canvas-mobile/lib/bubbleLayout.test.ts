@@ -12,7 +12,7 @@ import {
   ringRadius, radialBand, deriveAngleRadial, canonicalChildPosition,
   syncPositionsFromAngleRadial, canvasSignature, relativeLayer,
   getAllDescendants, buildInitialBubbles, sizeForDepth, resolveCollisions,
-  SCALE_MIN, SCALE_MAX, SCALE_OPTIONS,
+  SCALE_MIN, SCALE_MAX, SCALE_OPTIONS, getSize,
 } from './bubbleLayout';
 import type { BubbleData } from './bubbleTypes';
 
@@ -41,6 +41,69 @@ describe('ringRadius', () => {
   it('never returns less than the touching distance, however many siblings', () => {
     for (const n of [1, 2, 5, 20, 100]) {
       expect(ringRadius(100, 20, n)).toBeGreaterThanOrEqual(132);
+    }
+  });
+});
+
+// ─── Scale awareness ──────────────────────────────────────────────────────────
+//
+// A bubble's manual scale has to reach the GEOMETRY, not just the rendering.
+// When it only reached the rendering, enlarging a parent left its children
+// resolving to positions inside it, and enlarging a child pushed it through its
+// siblings — and because both platforms shared the blind spot, syncing
+// propagated the overlap instead of revealing it.
+
+describe('getSize', () => {
+  it('multiplies the depth size by the bubble’s manual scale', () => {
+    const base = sizeForDepth(1);
+    expect(getSize(bubble({ id: 'a', depth: 1 }))).toBeCloseTo(base, 6);
+    expect(getSize(bubble({ id: 'b', depth: 1, scale: 2 }))).toBeCloseTo(base * 2, 6);
+    expect(getSize(bubble({ id: 'c', depth: 1, scale: 0.5 }))).toBeCloseTo(base * 0.5, 6);
+  });
+
+  it('clamps a scale outside the range the UI offers', () => {
+    const base = sizeForDepth(1);
+    expect(getSize(bubble({ id: 'big', depth: 1, scale: 99 }))).toBeCloseTo(base * SCALE_MAX, 6);
+    expect(getSize(bubble({ id: 'tiny', depth: 1, scale: -5 }))).toBeCloseTo(base * SCALE_MIN, 6);
+  });
+});
+
+describe('ringRadius clears the largest sibling', () => {
+  it('grows the ring when one sibling is scaled up', () => {
+    const uniform = ringRadius(50, 20, 6);
+    const mixed   = ringRadius(50, 20, 6, 60);   // a much larger neighbour
+    expect(mixed).toBeGreaterThan(uniform);
+  });
+
+  it('is unchanged when every sibling is the same size', () => {
+    expect(ringRadius(50, 20, 6, 20)).toBe(ringRadius(50, 20, 6));
+  });
+
+  it('never returns less than the plain uniform ring', () => {
+    for (const maxR of [1, 20, 200]) {
+      expect(ringRadius(50, 20, 6, maxR)).toBeGreaterThanOrEqual(ringRadius(50, 20, 6));
+    }
+  });
+});
+
+describe('a scaled parent pushes its children clear of itself', () => {
+  it('seats a child further out when the parent is enlarged', () => {
+    const child = bubble({ id: 'c', parentId: 'p', depth: 1, angle: 0, radial: 0 });
+    const near = canonicalChildPosition(child, bubble({ id: 'p', x: 0, y: 0, depth: 0 }), 0, 1);
+    const far  = canonicalChildPosition(child, bubble({ id: 'p', x: 0, y: 0, depth: 0, scale: 2 }), 0, 1);
+    expect(far.x).toBeGreaterThan(near.x);
+  });
+
+  // radial 0 means "touching the parent" — the closest the leash allows. Even
+  // there the child must sit outside the parent's edge, or it renders inside it.
+  it('keeps a child outside the parent’s edge at radial 0, however the two are scaled', () => {
+    for (const [ps, cs] of [[1, 1], [2, 1], [1, 2], [2, 2], [0.5, 2]] as const) {
+      const parent = bubble({ id: 'p', x: 0, y: 0, depth: 0, scale: ps });
+      const child  = bubble({ id: 'c', parentId: 'p', depth: 1, scale: cs, angle: 0, radial: 0 });
+      const pos = canonicalChildPosition(child, parent, 0, 1);
+      const centreDistance = Math.hypot(pos.x - parent.x, pos.y - parent.y);
+      const edgeToEdge = centreDistance - getSize(parent) / 2 - getSize(child) / 2;
+      expect(edgeToEdge).toBeGreaterThan(0);
     }
   });
 });

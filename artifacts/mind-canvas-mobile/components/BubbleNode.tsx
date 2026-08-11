@@ -5,6 +5,14 @@ import Svg, {
 } from 'react-native-svg';
 import { BubbleData } from '@/lib/bubbleTypes';
 
+// Label legibility bounds, in on-screen pixels. Kept identical to the web
+// values (LABEL_* in MindCanvas.tsx) so the same canvas reads the same way on
+// both platforms.
+const LABEL_MIN_PX = 11;
+const LABEL_MAX_PX = 22;
+const LABEL_FADE_FROM_PX = 52;   // fully visible at or above this screen diameter
+const LABEL_FADE_TO_PX   = 28;   // fully transparent at or below
+
 interface Props {
   bubble:         BubbleData;
   size:           number;
@@ -50,7 +58,19 @@ export const BubbleNode = React.memo(function BubbleNode({
   // Font-size is in screen pixels on React Native, so it must use the actual
   // rendered screen-space size. This scales continuously with camera.scale
   // during pinch, giving the same proportional feel as the web SVG labels.
-  const labelFontSize = Math.max(size * 0.135, 8.5);
+  // `size` is already in SCREEN pixels (world size × camera scale), so these
+  // bounds are literal on-screen sizes. Text still scales with the canvas
+  // through the comfortable middle, but stops shrinking into illegibility when
+  // zoomed out and stops ballooning when zoomed in. Matches the web clamp.
+  const labelFontSize = Math.min(Math.max(size * 0.135, LABEL_MIN_PX), LABEL_MAX_PX);
+  // Clamping alone would leave every distant bubble carrying a full-size label,
+  // turning a zoomed-out canvas into overlapping text. Fade the label out once
+  // its bubble is too small on screen to hold it — at that distance the bubble
+  // reads as a shape, which is all it needs to be.
+  const labelOpacity =
+    size >= LABEL_FADE_FROM_PX ? 1
+    : size <= LABEL_FADE_TO_PX ? 0
+    : (size - LABEL_FADE_TO_PX) / (LABEL_FADE_FROM_PX - LABEL_FADE_TO_PX);
 
   // Unique gradient IDs scoped to this bubble so SVG defs don't collide
   const uid = `b${bubble.id.replace(/[^a-zA-Z0-9]/g, '')}`;
@@ -116,7 +136,7 @@ export const BubbleNode = React.memo(function BubbleNode({
           inside the circle at all zoom levels (matches web maxWidth: '84%'). */}
       <View style={styles.labelContainer} pointerEvents="none">
         <Text
-          style={[styles.label, { fontSize: labelFontSize, maxWidth: size * 0.84 }]}
+          style={[styles.label, { fontSize: labelFontSize, opacity: labelOpacity, maxWidth: size * 0.84 }]}
           numberOfLines={2}
           allowFontScaling={false}
         >

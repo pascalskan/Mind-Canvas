@@ -318,7 +318,16 @@ router.put('/map', requireMapToken, async (req, res) => {
   }
 
   const myGen = ++writeGeneration;
-  const data = parsed.value;
+
+  // The SERVER decides when a save happened, overriding whatever the client
+  // sent. Every device orders saves by comparing savedAt against its own last
+  // seen value, and savedAt used to come from the saving device's clock — so
+  // two devices whose clocks disagreed could never see each other's work. A
+  // phone running a few minutes behind a laptop would publish saves that the
+  // laptop read as OLDER than its own, and silently ignored: both sides report
+  // themselves in sync while holding completely different canvases, with no
+  // error anywhere. One clock removes the whole class of problem.
+  const data = { ...parsed.value, savedAt: Date.now() };
 
   // Optimistically record this as the newest known data immediately so GET can
   // serve it if the DB becomes unreachable before the write completes.
@@ -332,7 +341,11 @@ router.put('/map', requireMapToken, async (req, res) => {
 
   const err = await enqueueWrite(myGen, data);
   if (err === null) {
-    res.json({ ok: true });
+    // Hand back the timestamp we assigned. The saving client has to adopt it
+    // as its "last seen" value; if it kept its own clock's reading instead, the
+    // very next poll would compare the server's savedAt against a different
+    // number and conclude it was out of step with its own save.
+    res.json({ ok: true, savedAt: data.savedAt });
   } else {
     res.status(500).json({ ok: false, error: err.message });
   }

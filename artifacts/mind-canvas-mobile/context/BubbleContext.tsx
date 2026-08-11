@@ -6,7 +6,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { BubbleData, MAX_DEPTH, type SaveMeta } from '@/lib/bubbleTypes';
 import {
-  buildInitialBubbles, ringRadius, sizeForDepth, ROOT_COLORS, PILLAR_COLORS,
+  buildInitialBubbles, ringRadius, sizeForDepth, getSize, bubbleScale, ROOT_COLORS, PILLAR_COLORS,
   resolveCollisions, relativeLayer, syncPositionsFromAngleRadial, canvasSignature,
   LAYER_SIZES_OVERVIEW, LAYER_SIZES_FOCUSED, SCALE_MIN, SCALE_MAX,
 } from '@/lib/bubbleLayout';
@@ -15,6 +15,20 @@ import {
   type CloudSnapshot, type PushResult, type SaveFailure, type ImportedCanvas,
 } from '@/lib/persistence';
 import { STORAGE_VERSION } from '@/lib/bubbleTypes';
+
+/**
+ * Where this device stands relative to the shared map.
+ *
+ * Under a manual-save model the user is responsible for keeping two devices in
+ * step, which means the app owes them a straight answer about whether they are.
+ * Nothing used to say: you could sit on a canvas three saves behind the website
+ * with no indication at all.
+ */
+export type SyncState =
+  | { kind: 'unknown' }
+  | { kind: 'unsaved';  lastChecked: number }
+  | { kind: 'behind';   remoteSavedAt: number; lastChecked: number }
+  | { kind: 'in-sync';  lastChecked: number };
 
 // ── Context shape ──────────────────────────────────────────────────────────────
 
@@ -47,6 +61,8 @@ interface BubbleContextValue {
   hasUnsavedChanges: boolean;
   /** Metadata of the save this canvas corresponds to (for "last saved …"). */
   savedMeta:     SaveMeta;
+  /** Where this device stands relative to the shared map — see SyncState. */
+  syncState:     SyncState;
 
   /**
    * A newer save found on the server that this device has not seen, awaiting
@@ -77,6 +93,11 @@ interface BubbleContextValue {
   batchUpdatePositions: (updates: { id: string; x: number; y: number; angle?: number; radial?: number }[]) => void;
   /** Re-derives canonical x/y for every non-root bubble from its angle/radial. */
   resyncPositions: () => void;
+  /**
+   * Records that the user is actively working, so the periodic check does not
+   * adopt a remote save out from under them before their first edit lands.
+   */
+  noteInteraction: () => void;
 
   exportMap: () => Promise<void>;
   importMap: () => Promise<void>;
@@ -106,6 +127,14 @@ export function useBubbles() {
 // at any layer size), so syncPositionsFromAngleRadial only needs to run when
 // mobile ingests bubbles it didn't compute itself: cloud bootstrap and the
 // cross-device poll merge, below. No per-focus-change effect is needed at all.
+
+/**
+ * How long the user must have been idle before a newer remote save is adopted
+ * without asking. Long enough to cover "reaching for the canvas but hasn't
+ * changed anything yet"; short enough that leaving the app alone still picks
+ * work up automatically.
+ */
+const IDLE_BEFORE_ADOPT_MS = 8_000;
 
 const INITIAL = buildInitialBubbles();
 
@@ -248,9 +277,12 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
   const saveCanvas = useCallback(async (): Promise<PushResult> => {
     setSaving(true);
     savingRef.current = true;
-    const savedAt = Date.now();
-    const meta = { name: canvasName.trim() || undefined, savedAt, savedBy: 'mobile' as const };
+    const meta = { name: canvasName.trim() || undefined, savedBy: 'mobile' as const };
     const result = await pushToCloud(bubblesRef.current, meta);
+    // The server decides the save time; everything below records ITS value so
+    // this device and every other one order saves by the same clock.
+    const savedAt = result.ok ? result.savedAt : 0;
+    const savedMetaFromServer: SaveMeta = { ...meta, savedAt };
 
     if (result.ok) {
       // Mirror the new baseline into the local draft FIRST. Advancing
@@ -258,11 +290,15 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
       // write failed, a relaunch would read the older stored savedAt and the
       // device would then prompt about its own save. Only move the baseline
       // once it is actually recorded.
-      const localOk = await saveBubbles(bubblesRef.current, meta);
+      const localOk = await saveBubbles(bubblesRef.current, savedMetaFromServer);
       if (localOk) {
         lastSeenSavedAtRef.current = savedAt;
-        setSavedMeta(meta);
+        setSavedMeta(savedMetaFromServer);
         setBaselineSignature(canvasSignature(bubblesRef.current, meta.name));
+        // We just became the newest save, so say so immediately rather than
+        // waiting up to 30s for the next check.
+        setRemoteSavedAt(savedAt);
+        setLastChecked(Date.now());
       }
     }
 
@@ -290,7 +326,9 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
       setLoaded(true);
 
       fetchFromCloud().then(cloud => {
+        setLastChecked(Date.now());
         if (!cloud) return;
+        setRemoteSavedAt(cloud.meta.savedAt ?? null);
         const cloudSavedAt = cloud.meta.savedAt ?? 0;
 
         // Nothing stored locally — this device has no work to protect, so
@@ -333,7 +371,11 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
       if (pendingSaveRef.current) return;    // a prompt is already showing
       if (savingRef.current) return;         // our own save is mid-flight
       const cloud = await fetchFromCloud();
+      // Record the round trip whatever it found, so the status line can say
+      // "checked just now" rather than going stale silently.
+      setLastChecked(Date.now());
       if (!cloud) return;
+      setRemoteSavedAt(cloud.meta.savedAt ?? null);
       // Re-check everything that could have changed during the request. The
       // saving check matters most: without it, a poll resolving between our
       // PUT committing and lastSeenSavedAt advancing offers the user their
@@ -341,7 +383,23 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
       if (editModeRef.current || pendingSaveRef.current || savingRef.current) return;
       const cloudSavedAt = cloud.meta.savedAt ?? 0;
       if (cloudSavedAt <= lastSeenSavedAtRef.current) return;
-      setPendingSave(cloud);
+
+      // A newer save exists. What happens next depends on whether there is
+      // anything here worth protecting:
+      //
+      //  • Nothing unsaved  → adopt it. Asking permission to replace work that
+      //    is already published, with a strictly newer version of that same
+      //    canvas, is a prompt with only one sensible answer. This is what
+      //    makes saving on one device simply show up on the other.
+      //  • Unsaved changes  → ask. This is the only case where adopting could
+      //    destroy something, so it stays a decision.
+      if (dirtyRef.current || Date.now() - lastInteractionRef.current < IDLE_BEFORE_ADOPT_MS) {
+        setPendingSave(cloud);
+        return;
+      }
+      applyCloudSnapshot(cloud);
+      lastSeenSavedAtRef.current = cloudSavedAt;
+      setSavedMeta(cloud.meta);
     };
     const timer = setInterval(check, 30_000);
     return () => clearInterval(timer);
@@ -370,6 +428,35 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
     () => loaded && canvasSignature(bubbles, canvasName || undefined) !== baselineSignature,
     [loaded, bubbles, canvasName, baselineSignature],
   );
+  // Readable from the 30 s check, whose closure is created once at mount.
+  const dirtyRef = useRef(hasUnsavedChanges);
+  dirtyRef.current = hasUnsavedChanges;
+
+  // ── Recent activity ───────────────────────────────────────────────────────
+  //
+  // "Nothing unsaved" is not the same as "nobody is working". A check landing
+  // between the user touching the canvas and their first actual change still
+  // sees a clean signature, so it would adopt the remote map out from under
+  // someone mid-thought. Requiring a short idle period as well closes that
+  // window; when the user IS active we fall back to asking.
+  const lastInteractionRef = useRef(0);
+  const noteInteraction = useCallback(() => {
+    lastInteractionRef.current = Date.now();
+  }, []);
+
+  // When the server was last reached, and what it held. Drives the sync line in
+  // Settings.
+  const [lastChecked, setLastChecked] = useState<number | null>(null);
+  const [remoteSavedAt, setRemoteSavedAt] = useState<number | null>(null);
+
+  const syncState: SyncState = useMemo(() => {
+    if (lastChecked === null)  return { kind: 'unknown' };
+    if (hasUnsavedChanges)     return { kind: 'unsaved', lastChecked };
+    if (remoteSavedAt !== null && remoteSavedAt > (savedMeta.savedAt ?? 0)) {
+      return { kind: 'behind', remoteSavedAt, lastChecked };
+    }
+    return { kind: 'in-sync', lastChecked };
+  }, [lastChecked, remoteSavedAt, hasUnsavedChanges, savedMeta.savedAt]);
 
   // ── Mutations ────────────────────────────────────────────────────────────────
 
@@ -413,13 +500,17 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
           ? relativeLayer(parent.id, fid, byIdLocal)
           : parent.depth <= 2 ? parent.depth : -1;
         const childLayer = parentLayer >= 0 ? parentLayer + 1 : -1;
+        // Scale-aware on both sides: seeding a child off the parent's UNSCALED
+        // size dropped it inside an enlarged parent.
         const pr = (parentLayer >= 0 && parentLayer <= 2)
-          ? sizes[parentLayer] / 2
-          : sizeForDepth(parent.depth) / 2;
+          ? (sizes[parentLayer] * bubbleScale(parent)) / 2
+          : getSize(parent) / 2;
         const cr = (childLayer >= 0 && childLayer <= 2)
           ? sizes[childLayer] / 2
           : sizeForDepth(depth) / 2;
-        const R  = ringRadius(pr, cr, siblings.length + 1);
+        // Clear the largest existing sibling, not just our own size.
+        const R  = ringRadius(pr, cr, siblings.length + 1,
+          Math.max(cr, ...siblings.map(s => getSize(s) / 2)));
 
         let angle: number;
         if (!siblings.length) {
@@ -622,19 +713,19 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo<BubbleContextValue>(() => ({
     bubbles, focusedId, editMode, editSelection, byId, cloudSaveOk,
     canvasName, setCanvasName, saving, saveCanvas, saveError,
-    hasUnsavedChanges, savedMeta,
+    hasUnsavedChanges, savedMeta, syncState,
     pendingSave, acceptPendingSave, dismissPendingSave,
     setFocusedId, setEditSelection, enterEditMode, cancelEditMode, saveEditMode,
     addBubble, deleteBubble, renameBubble, recolorBubble, resizeBubble,
-    updateBubblePosition, batchUpdatePositions, resyncPositions,
+    updateBubblePosition, batchUpdatePositions, resyncPositions, noteInteraction,
     exportMap, importMap, clearCanvas,
   }), [
     bubbles, focusedId, editMode, editSelection, byId, cloudSaveOk,
-    canvasName, saving, saveCanvas, saveError, hasUnsavedChanges, savedMeta,
+    canvasName, saving, saveCanvas, saveError, hasUnsavedChanges, savedMeta, syncState,
     pendingSave, acceptPendingSave, dismissPendingSave,
     enterEditMode, cancelEditMode, saveEditMode,
     addBubble, deleteBubble, renameBubble, recolorBubble, resizeBubble,
-    updateBubblePosition, batchUpdatePositions, resyncPositions,
+    updateBubblePosition, batchUpdatePositions, resyncPositions, noteInteraction,
     exportMap, importMap, clearCanvas,
   ]);
 

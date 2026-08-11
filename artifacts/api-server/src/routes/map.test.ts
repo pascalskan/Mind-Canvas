@@ -192,10 +192,16 @@ test(
         200,
         `GET should return 200 but got ${getResult.status}`,
       );
+      // savedAt is deliberately NOT compared: the server stamps its own, so a
+      // byte-for-byte match with what the client sent is no longer the
+      // contract. Everything else must survive the failed write untouched.
+      const served = { ...(getResult.body as Record<string, unknown>) };
+      assert.equal(typeof served['savedAt'], 'number', 'server should stamp savedAt');
+      delete served['savedAt'];
       assert.deepEqual(
-        getResult.body,
+        served,
         payload,
-        'GET should return the exact payload submitted by the failed PUT',
+        'GET should return the payload submitted by the failed PUT, aside from the server timestamp',
       );
     } finally {
       await closeServer(server);
@@ -275,6 +281,8 @@ test('PUT /api/map rejects malformed bodies with 400 and preserves the stored ma
       savedBy: 'web',
     };
     await put(server, '/api/map', good);
+    // What the server actually stored — its own savedAt, not the one we sent.
+    const stored = (await get(server, '/api/map')).body;
 
     for (const [name, body] of REJECTED_BODIES) {
       const res = await put(server, '/api/map', body);
@@ -288,10 +296,52 @@ test('PUT /api/map rejects malformed bodies with 400 and preserves the stored ma
 
       const after = await get(server, '/api/map');
       assert.deepEqual(
-        after.body, good,
+        after.body, stored,
         `${name}: the stored map must be untouched by a rejected write`,
       );
     }
+  } finally {
+    await closeServer(server);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// savedAt is the SERVER's, not the client's.
+//
+// Every device orders saves by comparing savedAt against its own last-seen
+// value. While that number came from the saving device's clock, two devices
+// whose clocks disagreed could never see each other's work: a phone running a
+// few minutes behind a laptop published saves the laptop read as OLDER than
+// its own and silently ignored. Both sides report themselves in sync while
+// holding completely different canvases, with no error anywhere.
+// ---------------------------------------------------------------------------
+
+test('PUT /api/map stamps its own savedAt, overriding whatever the client sent', async () => {
+  const server = await startServer();
+  try {
+    const before = Date.now();
+    // A client whose clock is absurdly far in the past — the case that broke sync.
+    const res = await put(server, '/api/map', {
+      version: 2,
+      bubbles: [GOOD_BUBBLE],
+      savedAt: 1,
+      savedBy: 'mobile',
+    });
+    const after = Date.now();
+
+    // The database is unreachable throughout this file, so the write itself
+    // fails — but the stamping happens before any DB work, and GET serves the
+    // in-memory value, which is exactly what we want to inspect.
+    assert.equal(res.status, 500, 'DB is down in this suite, so the write reports failure');
+
+    const { body: stored } = await get(server, '/api/map');
+    const stamped = (stored as Record<string, unknown>)['savedAt'] as number;
+    assert.equal(typeof stamped, 'number', 'the server must stamp savedAt');
+    assert.notEqual(stamped, 1, "the client's clock must not survive");
+    assert.ok(
+      stamped >= before && stamped <= after,
+      `savedAt ${stamped} should come from the server's clock`,
+    );
   } finally {
     await closeServer(server);
   }
@@ -320,7 +370,9 @@ test('PUT /api/map accepts a well-formed body and strips unknown top-level keys'
     const stored = body as Record<string, unknown>;
     assert.equal(stored['name'], 'Accepted');
     assert.equal(stored['savedBy'], 'mobile');
-    assert.equal(stored['savedAt'], 1_700_000_000_001);
+    // Not the value we sent — the server assigns its own.
+    assert.equal(typeof stored['savedAt'], 'number');
+    assert.notEqual(stored['savedAt'], 1_700_000_000_001);
     assert.equal((stored['bubbles'] as unknown[]).length, 2);
     assert.equal(
       'injected' in stored, false,

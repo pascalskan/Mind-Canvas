@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import type { SaveFailure } from '../hooks/useBubbleState';
+import type { SaveFailure, SyncState } from '../hooks/useBubbleState';
 import type { SaveMeta } from '../persistence';
 
 interface Props {
@@ -10,6 +10,7 @@ interface Props {
   saveError: SaveFailure | null;
   hasUnsavedChanges: boolean;
   savedMeta: SaveMeta;
+  syncState: SyncState;
   onSave: () => Promise<{ ok: boolean }>;
   onExport: () => void;
   onImport: () => void;
@@ -27,6 +28,25 @@ function relativeTime(ts: number): string {
   if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
   const days = Math.round(hours / 24);
   return `${days} day${days === 1 ? '' : 's'} ago`;
+}
+
+/**
+ * One sentence on whether this browser and the app are looking at the same
+ * canvas. Under manual saving that is genuinely the user's problem to manage,
+ * and until this line existed the app never volunteered the answer.
+ */
+function syncDescription(s: SyncState): string {
+  switch (s.kind) {
+    case 'unknown':
+      return 'Checking whether your app has a newer version…';
+    case 'unsaved':
+      return 'Your app is still on the last saved version. Save to send these changes to it.';
+    case 'behind':
+      return `Your app saved a newer version ${relativeTime(s.remoteSavedAt)}. `
+           + 'It will open here automatically once you finish editing.';
+    case 'in-sync':
+      return `In sync with your app as of ${relativeTime(s.lastChecked)}.`;
+  }
 }
 
 /** What to tell the user after a failed save — each cause needs different advice. */
@@ -52,7 +72,7 @@ function saveErrorMessage(reason: SaveFailure): string {
  * stray click away from the drawing surface.
  */
 export default function SettingsPanel({
-  canvasName, onNameChange, saving, saveError, hasUnsavedChanges, savedMeta,
+  canvasName, onNameChange, saving, saveError, hasUnsavedChanges, savedMeta, syncState,
   onSave, onExport, onImport, onClear, onClose,
 }: Props) {
   const [justSaved, setJustSaved] = useState(false);
@@ -127,6 +147,19 @@ export default function SettingsPanel({
                   : 'Saving publishes this canvas so your app can pick it up.'}
             </p>
           )}
+
+          {/* ── Are the two devices on the same canvas? ─────────────────── */}
+          <div className="flex items-start gap-2 mt-4 pt-3" style={{ borderTop: '1px solid rgba(0,0,0,.06)' }}>
+            <span aria-hidden="true" style={{
+              width: 7, height: 7, borderRadius: '50%', marginTop: 5, flexShrink: 0,
+              background: syncState.kind === 'in-sync' ? 'hsl(150,45%,50%)'
+                : syncState.kind === 'unknown' ? 'hsl(0,0%,70%)'
+                : 'hsl(35,85%,55%)',
+            }} />
+            <p className="text-xs font-light text-gray-500 leading-relaxed">
+              {syncDescription(syncState)}
+            </p>
+          </div>
 
           {/* ── Transfer ───────────────────────────────────────────────── */}
           <p className={`${label} mt-6 mb-2`}>Canvas file</p>
