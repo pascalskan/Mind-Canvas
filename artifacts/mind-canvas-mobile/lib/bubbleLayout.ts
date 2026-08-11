@@ -44,8 +44,48 @@ const BASE_SIZES = [200, 160, 130, 110, 95, 82, 72, 64, 58, 52, 48];
 export function sizeForDepth(depth: number): number {
   return BASE_SIZES[Math.min(depth, BASE_SIZES.length - 1)];
 }
+/** A bubble's manual scale, clamped to the range the UI actually offers. */
+export function bubbleScale(b: BubbleData): number {
+  const s = b.scale ?? 1;
+  return Math.min(Math.max(s, SCALE_MIN), SCALE_MAX);
+}
+
 export function getSize(b: BubbleData): number {
-  return sizeForDepth(b.depth) * (b.scale ?? 1.0);
+  return sizeForDepth(b.depth) * bubbleScale(b);
+}
+
+// ── Layer-2 pip cluster ───────────────────────────────────────────────────────
+// Kept identical to web (PIP_* in MindCanvas.tsx).
+export const PIP_HOVER_GAP   = 14;                // world px between parent edge and pip
+export const PIP_FAN_STEP    = 0.34;              // radians between adjacent pips
+export const PIP_FAN_MAX_ARC = Math.PI * 1.25;    // total arc the fan may occupy
+
+/**
+ * Where a layer-2 indicator dot is DRAWN — which is deliberately not where the
+ * bubble actually is.
+ *
+ * A pip exists to say "there is more inside this bubble". It is not a preview of
+ * the layout underneath, so it ignores its own stored angle/radial and hovers in
+ * a tight fan just off its parent, on the far side from the grandparent — the
+ * dots point outward, away from where the user came from, so they read as
+ * "further in" rather than scattering back across the parent.
+ *
+ * Nothing stored changes. Focus the parent and the same bubble becomes layer 1,
+ * where its real position takes over again.
+ */
+export function pipDisplayPosition(
+  parentX: number, parentY: number,
+  parentDisplaySize: number, pipDisplaySize: number,
+  ringIndex: number, ringSize: number,
+  grandparent: { x: number; y: number } | null,
+): { x: number; y: number } {
+  const away = grandparent
+    ? Math.atan2(parentY - grandparent.y, parentX - grandparent.x)
+    : -Math.PI / 2;
+  const step  = Math.min(PIP_FAN_STEP, PIP_FAN_MAX_ARC / Math.max(1, ringSize));
+  const angle = away + (ringIndex - (ringSize - 1) / 2) * step;
+  const r     = parentDisplaySize / 2 + pipDisplaySize / 2 + PIP_HOVER_GAP;
+  return { x: parentX + Math.cos(angle) * r, y: parentY + Math.sin(angle) * r };
 }
 
 // ── Three-layer display sizes (world units) ───────────────────────────────────
@@ -55,10 +95,20 @@ export const LAYER_SIZES_FOCUSED:  [number, number, number] = [250, 132, 16];
 
 // ── Ring geometry ─────────────────────────────────────────────────────────────
 
-export function ringRadius(parentR: number, childR: number, n: number): number {
+/**
+ * Ring radius that fits `n` children around a parent of radius `parentR`.
+ *
+ * `maxSiblingR` is the radius of the LARGEST child on the ring, which is what
+ * the angular spacing actually has to clear. It differs from `childR` only when
+ * siblings are scaled differently — and when it does, sizing the ring off
+ * `childR` alone lets a small bubble compute a tight ring that its large
+ * neighbour then overlaps. Defaults to `childR` for the uniform case.
+ */
+export function ringRadius(parentR: number, childR: number, n: number, maxSiblingR: number = childR): number {
   const minGap = 12;
   if (n <= 1) return parentR + childR + minGap;
-  const ringByAngle = (childR + minGap / 2) / Math.sin(Math.PI / n);
+  const biggest = Math.max(childR, maxSiblingR);
+  const ringByAngle = (biggest + minGap / 2) / Math.sin(Math.PI / n);
   return Math.max(parentR + childR + minGap, ringByAngle);
 }
 
@@ -75,9 +125,11 @@ const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
  * band on mobile, a `radial` value written by web had nothing to resolve
  * against here.
  */
-export function radialBand(pr: number, cr: number, n: number): { minD: number; maxD: number; natural: number } {
+export function radialBand(
+  pr: number, cr: number, n: number, maxSiblingR: number = cr,
+): { minD: number; maxD: number; natural: number } {
   const minD = pr + cr + GAP;
-  const natural = ringRadius(pr, cr, n);
+  const natural = ringRadius(pr, cr, n, maxSiblingR);
   const maxD = Math.max(natural + Math.max(40, pr * 0.9), minD + Math.max(48, pr * 1.6));
   return { minD, maxD, natural };
 }
@@ -102,8 +154,16 @@ export function deriveAngleRadial(
  * used specifically as the CANONICAL reference frame for angle/radial <->
  * x/y conversion outside of live rendering — see canonicalChildPosition.
  */
-function canonicalBand(parent: BubbleData, child: BubbleData, siblingCount: number) {
-  return radialBand(sizeForDepth(parent.depth) / 2, sizeForDepth(child.depth) / 2, siblingCount);
+function canonicalBand(
+  parent: BubbleData, child: BubbleData, siblingCount: number, maxSiblingR?: number,
+) {
+  // getSize, NOT sizeForDepth: the canonical band has to account for a bubble's
+  // manual scale, exactly as the rendered sizing already does. Using the
+  // unscaled depth size here meant enlarging a parent left its children
+  // resolving to positions inside it, and enlarging a child pushed it through
+  // its siblings — on both platforms, so sync propagated the overlap rather
+  // than revealing it.
+  return radialBand(getSize(parent) / 2, getSize(child) / 2, siblingCount, maxSiblingR);
 }
 
 /**
@@ -124,8 +184,9 @@ export function canonicalChildPosition(
   parent: BubbleData,
   ringIndex: number,
   ringSize: number,
+  maxSiblingR?: number,
 ): { x: number; y: number; angle: number; radial: number } {
-  const band = canonicalBand(parent, bubble, ringSize);
+  const band = canonicalBand(parent, bubble, ringSize, maxSiblingR);
   const dx = bubble.x - parent.x, dy = bubble.y - parent.y;
   const angle = bubble.angle ?? (Math.hypot(dx, dy) > 1
     ? Math.atan2(dy, dx)
@@ -176,7 +237,10 @@ export function syncPositionsFromAngleRadial(bubbles: BubbleData[]): BubbleData[
     }
     const ring = rings[parent.id] ?? [b.id];
     const index = Math.max(0, ring.indexOf(b.id));
-    const { x, y, angle, radial } = canonicalChildPosition(b, parent, index, ring.length);
+    // Size the ring against its largest member so mixed-scale siblings do not
+    // overlap each other.
+    const maxSiblingR = Math.max(...ring.map(id => getSize(byId[id] ?? b) / 2));
+    const { x, y, angle, radial } = canonicalChildPosition(b, parent, index, ring.length, maxSiblingR);
     if (Math.abs(x - b.x) > 0.5 || Math.abs(y - b.y) > 0.5 || b.angle !== angle || b.radial !== radial) {
       changed = true;
       resolved[b.id] = { ...b, x, y, angle, radial };

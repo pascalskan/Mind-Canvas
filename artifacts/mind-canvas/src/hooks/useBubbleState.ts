@@ -74,6 +74,26 @@ async function fetchFromCloud(): Promise<CloudSnapshot | null> {
  * (`not-configured` exists on mobile, where the API URL is baked in at build
  * time; the web app is always same-origin so it cannot occur here.)
  */
+/**
+ * Where this device stands relative to the shared map.
+ *
+ * Under a manual-save model the user is responsible for keeping two devices in
+ * step, which means the app owes them a straight answer about whether they are.
+ * Nothing used to say: you could sit on a canvas three saves behind your phone
+ * with no indication at all.
+ *
+ *  - `unknown`  the server has not been reached yet this session
+ *  - `unsaved`  local edits are not published; nothing else matters until they are
+ *  - `behind`   a newer save exists elsewhere (only reachable while an edit
+ *               session or an open prompt is blocking automatic adoption)
+ *  - `in-sync`  this canvas matches the shared map as of `lastChecked`
+ */
+export type SyncState =
+  | { kind: 'unknown' }
+  | { kind: 'unsaved';  lastChecked: number }
+  | { kind: 'behind';   remoteSavedAt: number; lastChecked: number }
+  | { kind: 'in-sync';  lastChecked: number };
+
 export type SaveFailure = 'not-configured' | 'unreachable' | 'rejected';
 export type PushResult = { ok: true } | { ok: false; reason: SaveFailure };
 
@@ -164,6 +184,8 @@ export interface BubbleStateResult {
   saveError:     SaveFailure | null;
   /** True when the canvas differs from the last successfully saved state. */
   hasUnsavedChanges: boolean;
+  /** Where this device stands relative to the shared map — see SyncState. */
+  syncState:         SyncState;
   /** Metadata of the save this canvas corresponds to (for "last saved …"). */
   savedMeta:     SaveMeta;
 
@@ -257,6 +279,25 @@ export function useBubbleState(
     () => canvasSignature(bubbles, canvasName || undefined) !== baselineSignature,
     [bubbles, canvasName, baselineSignature],
   );
+  // Readable from the 30 s check, whose closure is created once at mount.
+  const dirtyRef = useRef(hasUnsavedChanges);
+  dirtyRef.current = hasUnsavedChanges;
+
+  // When the server was last reached, and what it held. Drives the sync line in
+  // Settings — until this existed, nothing anywhere answered "are my two
+  // devices on the same canvas?", which is the one question a manual-save model
+  // makes it the user's job to care about.
+  const [lastChecked, setLastChecked] = useState<number | null>(null);
+  const [remoteSavedAt, setRemoteSavedAt] = useState<number | null>(null);
+
+  const syncState: SyncState = useMemo(() => {
+    if (lastChecked === null)  return { kind: 'unknown' };
+    if (hasUnsavedChanges)     return { kind: 'unsaved', lastChecked };
+    if (remoteSavedAt !== null && remoteSavedAt > (savedMeta.savedAt ?? 0)) {
+      return { kind: 'behind', remoteSavedAt, lastChecked };
+    }
+    return { kind: 'in-sync', lastChecked };
+  }, [lastChecked, remoteSavedAt, hasUnsavedChanges, savedMeta.savedAt]);
 
   // Warn before leaving with unpublished work. Only armed when there is
   // genuinely something to lose, so it never nags on an untouched canvas.
@@ -278,7 +319,9 @@ export function useBubbleState(
   // PROMPT. Nothing is applied behind the user's back.
   useEffect(() => {
     fetchFromCloud().then(cloud => {
+      setLastChecked(Date.now());
       if (!cloud) return;
+      setRemoteSavedAt(cloud.meta.savedAt ?? null);
       const cloudSavedAt = cloud.meta.savedAt ?? 0;
       if (!initial.hadStored) {
         setBubbles(cloud.bubbles);
@@ -311,7 +354,11 @@ export function useBubbleState(
       if (pendingSaveRef.current) return;   // a prompt is already showing
       if (savingRef.current) return;        // our own save is mid-flight
       const cloud = await fetchFromCloud();
+      // Record the round trip whatever it found, so the status line can say
+      // "checked just now" rather than going stale silently.
+      setLastChecked(Date.now());
       if (!cloud) return;
+      setRemoteSavedAt(cloud.meta.savedAt ?? null);
       // Re-check everything that could have changed during the request. The
       // saving check matters most: without it, a poll that resolves between
       // our PUT committing and lastSeenSavedAt advancing offers the user
@@ -319,7 +366,21 @@ export function useBubbleState(
       if (editModeRef.current || pendingSaveRef.current || savingRef.current) return;
       const cloudSavedAt = cloud.meta.savedAt ?? 0;
       if (cloudSavedAt <= lastSeenSavedAtRef.current) return;
-      setPendingSave(cloud);
+
+      // A newer save exists. What happens next depends on whether there is
+      // anything here worth protecting:
+      //
+      //  • Nothing unsaved  → adopt it. Asking permission to replace work that
+      //    is already published, with a strictly newer version of that same
+      //    canvas, is a prompt with only one sensible answer. This is what
+      //    makes saving on one device simply show up on the other.
+      //  • Unsaved changes  → ask. This is the only case where adopting could
+      //    destroy something, so it stays a decision.
+      if (dirtyRef.current) {
+        setPendingSave(cloud);
+        return;
+      }
+      applyCloudSnapshot(cloud);
     }, 30_000);
     return () => clearInterval(timer);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -337,9 +398,12 @@ export function useBubbleState(
   }, [bubbles, canvasName]);
 
   /** "Continue from recent save" — take the other device's work. */
-  const acceptPendingSave = useCallback(() => {
-    const snap = pendingSaveRef.current;
-    if (!snap) return;
+  /**
+   * Take a cloud snapshot wholesale: bubbles, name, and the save metadata it
+   * came with. Shared by the prompt's "open recent save" and by the automatic
+   * adoption that happens when there is nothing unsaved to protect.
+   */
+  const applyCloudSnapshot = useCallback((snap: CloudSnapshot) => {
     setBubbles(snap.bubbles);
     // Adopt the incoming name unconditionally, including when it is absent.
     // Keeping the old local name for an unnamed save left the canvas
@@ -351,6 +415,12 @@ export function useBubbleState(
     setBaselineSignature(canvasSignature(snap.bubbles, snap.meta.name));
     setPendingSave(null);
   }, [setPendingSave]);
+
+  const acceptPendingSave = useCallback(() => {
+    const snap = pendingSaveRef.current;
+    if (!snap) return;
+    applyCloudSnapshot(snap);
+  }, [applyCloudSnapshot]);
 
   /**
    * "Continue from current point" — keep working locally. Marking the save as
@@ -388,6 +458,10 @@ export function useBubbleState(
         lastSeenSavedAtRef.current = savedAt;
         setSavedMeta(meta);
         setBaselineSignature(canvasSignature(bubblesRef.current, meta.name));
+        // We just became the newest save, so the status line should say so
+        // immediately rather than waiting up to 30s for the next check.
+        setRemoteSavedAt(savedAt);
+        setLastChecked(savedAt);
       }
     }
 
@@ -436,7 +510,11 @@ export function useBubbleState(
       const siblings = bubbles.filter(b => b.parentId === parentId);
       const pr = getSize(parent) / 2;
       const cr = sizeForDepth(depth) / 2;
-      const R  = ringRadius(pr, cr, siblings.length + 1);
+      // Clear the largest existing sibling, not just our own size — otherwise a
+      // new bubble seeds on a ring sized for itself and lands inside a
+      // scaled-up neighbour.
+      const R  = ringRadius(pr, cr, siblings.length + 1,
+        Math.max(cr, ...siblings.map(s => getSize(s) / 2)));
 
       let angle: number;
       if (!siblings.length) {
@@ -517,6 +595,7 @@ export function useBubbleState(
     saveCanvas,
     saveError,
     hasUnsavedChanges,
+    syncState,
     savedMeta,
     pendingSave,
     acceptPendingSave,

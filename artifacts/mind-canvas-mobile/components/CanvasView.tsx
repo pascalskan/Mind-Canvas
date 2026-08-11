@@ -6,7 +6,7 @@ import { BubbleNode } from '@/components/BubbleNode';
 import { CanvasBackground } from '@/components/CanvasBackground';
 import {
   getBubbleDisplaySize, isInThreeLayerView, relativeLayer,
-  getAllDescendants, resolveCollisions, ringRadius,
+  getAllDescendants, resolveCollisions, ringRadius, getSize, bubbleScale, pipDisplayPosition,
   LAYER_SIZES_OVERVIEW, LAYER_SIZES_FOCUSED, sizeForDepth,
   radialBand, deriveAngleRadial,
 } from '@/lib/bubbleLayout';
@@ -65,17 +65,23 @@ function constrainToParentRing(
     ? relativeLayer(parent.id, focusedId, byId)
     : parent.depth <= 2 ? parent.depth : -1;
   const cLayer = pLayer >= 0 ? pLayer + 1 : -1;
-  const pr = pLayer >= 0 && pLayer <= 2 ? sizes[pLayer] / 2 : sizeForDepth(parent.depth) / 2;
-  const cr = cLayer >= 0 && cLayer <= 2 ? sizes[cLayer] / 2 : sizeForDepth(dragged.depth) / 2;
+  // Layer sizes carry the bubble's manual scale, matching how it is actually
+  // drawn — a leash computed from the unscaled size let an enlarged bubble be
+  // dragged inside its own parent.
+  const pr = pLayer >= 0 && pLayer <= 2 ? (sizes[pLayer] * bubbleScale(parent)) / 2 : getSize(parent) / 2;
+  const cr = cLayer >= 0 && cLayer <= 2 ? (sizes[cLayer] * bubbleScale(dragged)) / 2 : getSize(dragged) / 2;
   // +1 to include the dragged bubble itself in sibling count
-  const sibCount = bubbles.filter(b => b.parentId === dragged.parentId && b.id !== dragged.id).length + 1;
-  const rr       = ringRadius(pr, cr, sibCount);
+  const otherSibs = bubbles.filter(b => b.parentId === dragged.parentId && b.id !== dragged.id);
+  const sibCount = otherSibs.length + 1;
+  const rr       = ringRadius(pr, cr, sibCount, Math.max(cr, ...otherSibs.map(s => getSize(s) / 2)));
 
   const dx    = newWX - parent.x;
   const dy    = newWY - parent.y;
   const angle = Math.atan2(dy, dx);
   return { x: parent.x + Math.cos(angle) * rr, y: parent.y + Math.sin(angle) * rr };
 }
+
+const PIP_EASE_MS = 420;   // focus-change travel for the pip cluster
 
 const PHYS_GAP = 12;       // min gap between bubble edges, world units
 
@@ -263,6 +269,82 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: P
   );
   const visibleRef = useRef(visibleBubbles); visibleRef.current = visibleBubbles;
 
+  // ── Display positions for layer-2 pips ──────────────────────────────────────
+  //
+  // A pip is drawn beside its parent rather than at its real position (see
+  // pipDisplayPosition). That means focusing a bubble moves its children from
+  // the cluster out to where they actually live — a jump, unless it is eased.
+  //
+  // The ease is a BOUNDED animation that runs only on a focus change and stops
+  // when it settles. Mobile deliberately has no continuous layout loop, and
+  // this does not add one: it is idle except for the few hundred milliseconds
+  // after you tap in or out.
+  const pipTargets = useCallback((focus: string | null) => {
+    const out: Record<string, { x: number; y: number }> = {};
+    const map = byIdRef.current;
+    const sizes = focus ? LAYER_SIZES_FOCUSED : LAYER_SIZES_OVERVIEW;
+    const rings: Record<string, string[]> = {};
+    for (const b of bubblesRef.current) {
+      if (b.parentId) (rings[b.parentId] ??= []).push(b.id);
+    }
+    for (const b of bubblesRef.current) {
+      if (relativeLayer(b.id, focus, map) !== 2) continue;
+      const parent = b.parentId ? map[b.parentId] : null;
+      if (!parent) continue;
+      const gp = parent.parentId ? map[parent.parentId] : null;
+      const ring = rings[parent.id] ?? [b.id];
+      out[b.id] = pipDisplayPosition(
+        parent.x, parent.y,
+        sizes[Math.max(0, Math.min(2, relativeLayer(parent.id, focus, map)))] * bubbleScale(parent),
+        sizes[2],
+        Math.max(0, ring.indexOf(b.id)), ring.length,
+        gp ? { x: gp.x, y: gp.y } : null,
+      );
+    }
+    return out;
+  }, []);
+
+  // World-space position each bubble is currently DRAWN at, when it differs
+  // from its stored position. Empty means "draw everything where it is".
+  const displayPos = useRef<Record<string, { x: number; y: number }>>({});
+  const displayRaf = useRef<number>(0);
+
+  useEffect(() => {
+    cancelAnimationFrame(displayRaf.current);
+    const targets = pipTargets(focusedId);
+    // Anything not a pip in the new view eases back to its real position.
+    const from = { ...displayPos.current };
+    const startedAt = Date.now();
+
+    const step = () => {
+      const elapsed = Date.now() - startedAt;
+      const t = Math.min(1, elapsed / PIP_EASE_MS);
+      // easeOutCubic — quick to leave, gentle to arrive.
+      const e = 1 - Math.pow(1 - t, 3);
+      const next: Record<string, { x: number; y: number }> = {};
+      const live = bubblesRef.current;
+      for (const b of live) {
+        const target = targets[b.id] ?? { x: b.x, y: b.y };
+        const start  = from[b.id] ?? { x: b.x, y: b.y };
+        if (t >= 1) {
+          if (targets[b.id]) next[b.id] = target;   // pips hold their cluster spot
+          continue;
+        }
+        next[b.id] = {
+          x: start.x + (target.x - start.x) * e,
+          y: start.y + (target.y - start.y) * e,
+        };
+      }
+      displayPos.current = next;
+      forcePhysicsTick();
+      if (t < 1) displayRaf.current = requestAnimationFrame(step);
+    };
+    displayRaf.current = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(displayRaf.current);
+  }, [focusedId, bubbles, pipTargets]);
+
+  useEffect(() => () => cancelAnimationFrame(displayRaf.current), []);
+
   // ── Camera fit on focus change ───────────────────────────────────────────────
   // Rule: zoom in only on the FIRST tap (overview → focused).
   // Subsequent taps while already focused just pan at the locked scale so
@@ -358,9 +440,12 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: P
       // would focus into it. Web deliberately makes layer 2 visual-only;
       // exclude it here too so both platforms treat it the same way.
       if (relativeLayer(b.id, fid, bid) === 2) continue;
+      // Same precedence as the renderer, so a bubble is tappable exactly where
+      // it is drawn — including mid-flight while the pip cluster eases out.
       const phys = physP[b.id];
-      const bx   = phys ? phys.x : b.x;
-      const by   = phys ? phys.y : b.y;
+      const disp = displayPos.current[b.id];
+      const bx   = phys ? phys.x : disp ? disp.x : b.x;
+      const by   = phys ? phys.y : disp ? disp.y : b.y;
       const size = getBubbleDisplaySize(b, fid, bid);
       const r    = size / 2;
       const dx   = wx - bx, dy = wy - by;
@@ -651,8 +736,15 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: P
             const parent = bid[b.parentId];
             if (!parent) return u;
             const parentPos = allUpdates.get(parent.id) ?? { x: parent.x, y: parent.y };
-            const siblingCount = Math.max(1, allBubbles.filter(s => s.parentId === b.parentId).length);
-            const band = radialBand(sizeForDepth(parent.depth) / 2, sizeForDepth(b.depth) / 2, siblingCount);
+            // MUST match canonicalBand in bubbleLayout.ts exactly — this is the
+            // inverse conversion. If the two disagree, a drag writes an
+            // angle/radial that resolves somewhere else and the bubble jumps
+            // the moment positions are re-derived. Hence getSize (scale-aware)
+            // and the largest-sibling term, both mirroring canonicalBand.
+            const ringSiblings = allBubbles.filter(s => s.parentId === b.parentId);
+            const siblingCount = Math.max(1, ringSiblings.length);
+            const maxSiblingR = Math.max(getSize(b) / 2, ...ringSiblings.map(s => getSize(s) / 2));
+            const band = radialBand(getSize(parent) / 2, getSize(b) / 2, siblingCount, maxSiblingR);
             const { angle, radial } = deriveAngleRadial(u.x, u.y, parentPos.x, parentPos.y, band);
             return { ...u, angle, radial };
           });
@@ -791,9 +883,13 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: P
         const size  = worldDisplaySize * cam.scale;
         const layer = relativeLayer(b.id, focusedId, byId);
         // Use physics working position during animation; fall back to stored.
+        // Draw order of precedence: an active drag/settle position, then the
+        // eased display position (which is where a layer-2 pip lives), then
+        // the bubble's real stored position.
         const phys  = physicsPos.current[b.id];
-        const wx    = phys ? phys.x : b.x;
-        const wy    = phys ? phys.y : b.y;
+        const disp  = displayPos.current[b.id];
+        const wx    = phys ? phys.x : disp ? disp.x : b.x;
+        const wy    = phys ? phys.y : disp ? disp.y : b.y;
         const { sx, sy } = toScreen(wx, wy, cam);
         return (
           <BubbleNode

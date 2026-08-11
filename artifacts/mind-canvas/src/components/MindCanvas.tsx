@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
-import { motion, useMotionValue, animate, motionValue, type MotionValue } from 'framer-motion';
+import { motion, useMotionValue, useTransform, animate, motionValue, type MotionValue } from 'framer-motion';
 import {
   clearBubbles,
   exportBubbles,
@@ -19,6 +19,7 @@ import {
   sizeForDepth,
   getSize,
   ringRadius,
+  bubbleScale,
 } from '../lib/bubbleLayout';
 import { applyRootDrag, applyChildDrag, shouldWriteBubbleMotionValues, isBackgroundTap, descendantsOf as descendantsOfPure } from '../lib/dragHelpers';
 import SettingsPanel from './SettingsPanel';
@@ -51,11 +52,6 @@ const SCALE_OPTIONS = Array.from(
   { length: Math.round((SCALE_MAX - SCALE_MIN) / SCALE_STEP) + 1 },
   (_, i) => Math.round((SCALE_MIN + i * SCALE_STEP) * 10) / 10,
 );
-
-function bubbleScale(b: BubbleData): number {
-  const s = b.scale ?? 1;
-  return Math.min(Math.max(s, SCALE_MIN), SCALE_MAX);
-}
 
 function relativeLayer(id: string, focusedId: string | null, byId: Record<string, BubbleData>): number {
   if (!focusedId) return byId[id]?.depth ?? 0;
@@ -180,9 +176,9 @@ const SEED: { label: string; color: string; children: SeedNode[] }[] = [
 //   maxD    — the end of its leash
 // One definition, used by the layout, the drag and the collision solver, so
 // none of them can pull a bubble back out of where another put it.
-function radialBand(pr: number, cr: number, n: number) {
+function radialBand(pr: number, cr: number, n: number, maxSiblingR: number = cr) {
   const minD    = pr + cr + GAP;
-  const natural = ringRadius(pr, cr, n);
+  const natural = ringRadius(pr, cr, n, maxSiblingR);
   const maxD    = Math.max(natural + Math.max(40, pr * 0.9), minD + Math.max(48, pr * 1.6));
   return { minD, maxD, natural };
 }
@@ -343,6 +339,18 @@ function idHash(id: string): number {
 // as alive rather than as a rigid diagram: free drift, a slow swing along its
 // parent's ring, and a gentle in/out along its leash.
 const LAYER_FLOAT_AMP  = [24, 18, 5];        // free drift, px
+
+// ─── Layer-2 pip cluster ──────────────────────────────────────────────────────
+// How the indicator dots sit around their parent. See the layer === 2 branch in
+// layoutView for why they ignore their stored position entirely.
+const PIP_HOVER_GAP  = 14;                   // world px between parent edge and pip
+const PIP_FAN_STEP   = 0.34;                 // radians between adjacent pips
+const PIP_FAN_MAX_ARC = Math.PI * 1.25;      // total arc the fan may occupy
+
+// Per-frame follow factor for the eased layout. ~0.18 settles a large jump in
+// roughly a third of a second, which reads as travel rather than teleport,
+// while leaving continuous drift indistinguishable from unsmoothed.
+const POSITION_EASE = 0.18;
 const LAYER_ORBIT_AMP  = [0, 0.085, 0.035];  // swing along the ring, radians
 const LAYER_RADIAL_AMP = [0, 16, 4];         // breathing along the leash, px
 
@@ -401,11 +409,20 @@ function layoutView(all: BubbleData[], focusedId: string | null, time: number | 
     (rings[b.parentId] ??= []).push(b.id);
   }
 
+  // The largest child on each ring, so the angular spacing clears the biggest
+  // neighbour rather than assuming every sibling is the same size. Without it,
+  // a small bubble sitting next to a scaled-up one computes a ring tight enough
+  // for itself and gets overlapped.
+  const ringMaxR: Record<string, number> = {};
+  for (const [parentId, ids] of Object.entries(rings)) {
+    ringMaxR[parentId] = Math.max(...ids.map(id => sizeOf(map[id]) / 2));
+  }
+
   const bandOf = (b: BubbleData) => {
     const parent = b.parentId ? map[b.parentId] : null;
     if (!parent) return null;
     const ring = rings[parent.id] ?? [b.id];
-    return radialBand(sizeOf(parent) / 2, sizeOf(b) / 2, ring.length);
+    return radialBand(sizeOf(parent) / 2, sizeOf(b) / 2, ring.length, ringMaxR[parent.id] ?? sizeOf(b) / 2);
   };
 
   // Layer 0 keeps its stored world position: roots (and the bubble you are
@@ -433,6 +450,38 @@ function layoutView(all: BubbleData[], focusedId: string | null, time: number | 
 
     const ring  = rings[parent.id] ?? [b.id];
     const index = Math.max(0, ring.indexOf(b.id));
+
+    // ── Layer 2 is an INDICATOR, not the bubble ─────────────────────────────
+    //
+    // A layer-2 pip is an 18px dot that exists to say "there is more inside
+    // this bubble". It is not a view of where those children actually live, so
+    // it deliberately ignores its own stored angle/radial and instead hovers in
+    // a tight fan just off its parent, on the far side from the grandparent —
+    // pointing outward, away from where the user came from, so the dots read as
+    // "further in" rather than scattering back across the parent.
+    //
+    // Nothing stored changes. The moment the parent is focused, this bubble
+    // becomes layer 1, falls through to the normal branch below, and glides
+    // back to its real position (the tick smooths the handover).
+    if (layer === 2) {
+      const gp    = parent.parentId ? map[parent.parentId] : null;
+      const gpPos = gp ? pos[gp.id] : null;
+      // Direction from the grandparent through the parent and onward.
+      const away = gpPos
+        ? Math.atan2(pp.y - gpPos.y, pp.x - gpPos.x)
+        : -Math.PI / 2;
+      // Fan the siblings across an arc centred on that direction, tightening
+      // the step as the count grows so a large set still stays a neat cluster.
+      const step  = Math.min(PIP_FAN_STEP, PIP_FAN_MAX_ARC / Math.max(1, ring.length));
+      const angle = away + (index - (ring.length - 1) / 2) * step;
+      const r     = sizeOf(parent) / 2 + sizeOf(b) / 2 + PIP_HOVER_GAP;
+      pos[b.id] = {
+        x: pp.x + Math.cos(angle) * r + ownX,
+        y: pp.y + Math.sin(angle) * r + ownY,
+      };
+      continue;
+    }
+
     const dx = b.x - parent.x, dy = b.y - parent.y;
     // Explicit dragged angle wins; otherwise fall back to the seeded direction,
     // and finally to an even spread around the ring.
@@ -440,7 +489,7 @@ function layoutView(all: BubbleData[], focusedId: string | null, time: number | 
       ? Math.atan2(dy, dx)
       : (index / ring.length) * TAU - Math.PI / 2);
 
-    const band = radialBand(sizeOf(parent) / 2, sizeOf(b) / 2, ring.length);
+    const band = radialBand(sizeOf(parent) / 2, sizeOf(b) / 2, ring.length, ringMaxR[parent.id] ?? sizeOf(b) / 2);
     const span = Math.max(1, band.maxD - band.minD);
     const home = b.radial ?? (band.natural - band.minD) / span;
     let r = band.minD + span * clamp01(home);
@@ -500,14 +549,44 @@ function fitLayout(
 
 // ─── Glass bubble ─────────────────────────────────────────────────────────────
 
-function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange, onEditSave, onEditCancel, onLabelClick }: {
+// ─── Label legibility ─────────────────────────────────────────────────────────
+//
+// Labels live in world space, so their on-screen size is (world size × camera
+// scale) — unreadably small zoomed out, absurdly large zoomed in. These bounds
+// clamp the RENDERED size instead: text still scales with the canvas through
+// the comfortable middle, but stops shrinking and stops growing at the edges.
+const LABEL_MIN_PX = 11;
+const LABEL_MAX_PX = 22;
+// Clamping alone would leave every distant bubble carrying a full-size label,
+// which turns a zoomed-out canvas into overlapping text. So a label also fades
+// out once its bubble is too small on screen to hold it — the bubble itself
+// still reads as a shape, which is all it is at that distance.
+const LABEL_FADE_FROM_PX = 52;   // fully visible at or above this screen diameter
+const LABEL_FADE_TO_PX   = 28;   // fully transparent at or below
+
+function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange, onEditSave, onEditCancel, onLabelClick, cameraScale }: {
   size: number; color: string; label: string;
   isEditing?: boolean; editValue?: string;
   onEditChange?: (v: string) => void; onEditSave?: () => void; onEditCancel?: () => void;
   onLabelClick?: () => void;
+  cameraScale: MotionValue<number>;
 }) {
   const uid = (color + Math.round(size)).replace(/[^a-zA-Z0-9]/g, '');
   const fontSize = Math.max(size * 0.135, 8.5);
+
+  // Divide the clamped screen size back out by the camera scale, because this
+  // element is inside the world transform and will be multiplied by it again.
+  const labelFontSize = useTransform(cameraScale, s => {
+    const scale = Math.max(s, 1e-4);
+    const onScreen = fontSize * scale;
+    return Math.min(Math.max(onScreen, LABEL_MIN_PX), LABEL_MAX_PX) / scale;
+  });
+  const labelOpacity = useTransform(cameraScale, s => {
+    const diameterOnScreen = size * Math.max(s, 1e-4);
+    if (diameterOnScreen >= LABEL_FADE_FROM_PX) return 1;
+    if (diameterOnScreen <= LABEL_FADE_TO_PX)   return 0;
+    return (diameterOnScreen - LABEL_FADE_TO_PX) / (LABEL_FADE_FROM_PX - LABEL_FADE_TO_PX);
+  });
   // A rename must both START and END on the label. The second click of the
   // locking double-click presses down on the bubble (the label is inert until
   // the bubble is locked) and only lands on the label once the lock re-renders,
@@ -556,8 +635,8 @@ function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange
           // involuntarily zooms the whole page on mobile.
           style={{ fontSize: Math.max(fontSize, 16), lineHeight: 1.15 }}/>
       ) : (
-        <div className="relative z-10 text-gray-700 font-sans font-light tracking-wide select-none text-center break-words"
-          style={{ pointerEvents: onLabelClick ? 'auto' : 'none', fontSize, lineHeight: 1.15, maxWidth: '84%' }}
+        <motion.div className="relative z-10 text-gray-700 font-sans font-light tracking-wide select-none text-center break-words"
+          style={{ pointerEvents: onLabelClick ? 'auto' : 'none', fontSize: labelFontSize, opacity: labelOpacity, lineHeight: 1.15, maxWidth: '84%' }}
           onPointerDown={onLabelClick
             ? e => { e.stopPropagation(); labelArmed.current = true; }
             : undefined}
@@ -569,7 +648,7 @@ function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange
             ? () => { if (labelArmed.current) { labelArmed.current = false; onLabelClick(); } }
             : undefined}>
           {label}
-        </div>
+        </motion.div>
       )}
     </div>
   );
@@ -680,7 +759,7 @@ function colorsAreClose(first: string, second: string) {
 //                      the whole subtree, and a near-duplicate is challenged.
 //   depth 1+         — the color is that one bubble's own. It never touches its
 //                      parent or its children, and needs no duplicate check.
-function BubbleEditPanel({ color, scale, isPillar, inheritedColor, existingColors, onChoose, onScale, onResetColor }: {
+function BubbleEditPanel({ color, scale, isPillar, inheritedColor, existingColors, onChoose, onScale, onResetColor, counterScale }: {
   color: string;
   scale: number;
   isPillar: boolean;
@@ -689,6 +768,14 @@ function BubbleEditPanel({ color, scale, isPillar, inheritedColor, existingColor
   onChoose: (color: string) => void;
   onScale: (scale: number) => void;
   onResetColor?: () => void;
+  /**
+   * 1 / camera scale. This panel lives inside the world-space transform, so
+   * without it the controls shrank with the canvas — unusable at exactly the
+   * zoom level where you are rearranging things and most need them. Undoing the
+   * camera scale pins the panel to a constant SCREEN size while it stays
+   * anchored to its bubble.
+   */
+  counterScale: MotionValue<number>;
 }) {
   const [pending, setPending] = useState<string | null>(null);
   const choose = (next: string) => {
@@ -697,11 +784,15 @@ function BubbleEditPanel({ color, scale, isPillar, inheritedColor, existingColor
   };
 
   return (
-    <div className="absolute pointer-events-auto z-50"
+    <motion.div className="absolute pointer-events-auto z-50"
       style={{
         top: 'calc(100% + 15px)',
         left: '50%',
-        transform: 'translateX(-50%)',
+        x: '-50%',
+        scale: counterScale,
+        // Grow downward from the bubble as it counter-scales, rather than
+        // about its own middle, so the panel stays attached at the top.
+        transformOrigin: 'top center',
         // Never overflow the viewport on narrow screens.
         width: 'min(240px, calc(100vw - 32px))',
       }}
@@ -760,7 +851,7 @@ function BubbleEditPanel({ color, scale, isPillar, inheritedColor, existingColor
           </>
         )}
       </div>
-    </div>
+    </motion.div>
   );
 }
 
@@ -891,10 +982,23 @@ function AddPanel({ bubbles, onAdd, onClose, initialParentPath = [], quickCreate
         width: Math.min(292, window.innerWidth - 32),
         left: Math.max(16, Math.min(anchor.x + 44, window.innerWidth - Math.min(292, window.innerWidth - 32) - 16)),
         top: Math.max(16, Math.min(anchor.y - 120, window.innerHeight - 290)),
-      } : { width: Math.min(292, window.innerWidth - 32), top: stableTop.current, right: 16 }}
+      } : {
+        width: Math.min(292, window.innerWidth - 32),
+        top: stableTop.current,
+        right: 16,
+        // Hard stop at the bottom of the window. stableTop is derived from a
+        // FIXED 200px estimate of everything that isn't the scrollable list
+        // (see panelTop) — but the breadcrumb path and level headings grow as
+        // you drill in, so past a few levels the real chrome exceeded the
+        // estimate and the bottom of the panel ran off screen with no way to
+        // reach it. The list cap alone could not prevent that; only the panel
+        // itself knows where the window ends.
+        maxHeight: `calc(100vh - ${stableTop.current + 16}px)`,
+        display: 'flex',
+      }}
       onPointerDown={e => e.stopPropagation()}>
-      <div className="p-5"
-        style={{ background: 'rgba(255,255,255,.88)', backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)', borderRadius: 18, boxShadow: '0 8px 40px rgba(0,0,0,.08),inset 0 0 0 1px rgba(255,255,255,.9)' }}>
+      <div className="p-5 overflow-y-auto"
+        style={{ background: 'rgba(255,255,255,.88)', backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)', borderRadius: 18, boxShadow: '0 8px 40px rgba(0,0,0,.08),inset 0 0 0 1px rgba(255,255,255,.9)', flex: 1, minHeight: 0 }}>
 
         <p className="text-xs font-light text-gray-400 tracking-widest mb-3 uppercase">
           {quickCreate ? 'Name new bubble' : 'New bubble'}
@@ -1032,6 +1136,7 @@ export default function MindCanvas() {
     saveCanvas,
     saveError,
     hasUnsavedChanges,
+    syncState,
     savedMeta,
     pendingSave,
     acceptPendingSave,
@@ -1062,6 +1167,11 @@ export default function MindCanvas() {
   const cameraX = useMotionValue(typeof window !== 'undefined' ? window.innerWidth  / 2 : 640);
   const cameraY = useMotionValue(typeof window !== 'undefined' ? window.innerHeight / 2 : 360);
   const cameraScale = useMotionValue(0.5);
+  // Undoes the camera scale for UI that lives inside the world transform but
+  // must stay a fixed size on screen — currently the per-bubble edit panel.
+  // Created once here because the bubbles are rendered in a .map(), where hooks
+  // cannot be called.
+  const counterScale = useTransform(cameraScale, s => 1 / Math.max(s, 1e-4));
 
   // byId is provided by useBubbleState.
 
@@ -1077,6 +1187,11 @@ export default function MindCanvas() {
   // reconciler. This eliminates full re-renders every 16 ms and is the main
   // fix for mobile lag during panning and floating animation.
   const bubbleMVs   = useRef<Map<string, { x: MotionValue<number>; y: MotionValue<number> }>>(new Map());
+
+  // Eased positions, one per visible bubble — see the smoothing pass in the
+  // tick. Held in a ref because it is written every frame and must never
+  // trigger a React render.
+  const smoothPosRef = useRef<Map<string, { x: number; y: number }>>(new Map());
 
   const bubblesRef  = useRef<BubbleData[]>(bubbles);
   const positionsRef = useRef<Record<string, { x: number; y: number }>>({});
@@ -1107,6 +1222,41 @@ export default function MindCanvas() {
 
       // Push everything apart until nothing overlaps.
       resolveCollisions(list, map, pos, draggingRef.current, sizeOf, bandOf);
+
+      // ── Ease toward the computed layout ──────────────────────────────────
+      //
+      // Focusing a bubble changes what layer its descendants are on, and a
+      // layer-2 pip sits somewhere completely different from the same bubble at
+      // layer 1 (see layoutView). Writing the target straight to the DOM made
+      // that handover a hard teleport. Following the target instead means the
+      // pips visibly travel out to their real positions when you go in, and
+      // gather back to the parent when you come out.
+      //
+      // The factor is high enough that ordinary drift — slow and continuous —
+      // is followed imperceptibly, so this costs nothing in the steady state.
+      // A bubble seen for the first time starts AT its target rather than
+      // flying in from wherever the previous occupant of that id was.
+      const smooth = smoothPosRef.current;
+      const dragging = draggingRef.current;
+      for (const b of list) {
+        const target = pos[b.id];
+        if (!target) continue;
+        const prev = smooth.get(b.id);
+        // A dragged bubble must track the pointer exactly, with no lag.
+        if (!prev || b.id === dragging) {
+          smooth.set(b.id, { x: target.x, y: target.y });
+          continue;
+        }
+        prev.x += (target.x - prev.x) * POSITION_EASE;
+        prev.y += (target.y - prev.y) * POSITION_EASE;
+        pos[b.id] = { x: prev.x, y: prev.y };
+      }
+      // Drop bubbles that are no longer in view so a re-entry starts fresh at
+      // its target rather than gliding in from a stale position.
+      if (smooth.size > list.length) {
+        const live = new Set(list.map(b => b.id));
+        for (const id of smooth.keys()) if (!live.has(id)) smooth.delete(id);
+      }
 
       positionsRef.current = pos;
 
@@ -1405,7 +1555,9 @@ export default function MindCanvas() {
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      if (editMode) return;
+      // Zoom stays available in edit mode. Blocking it meant you could not get
+      // close enough to work on a small bubble, nor far enough out to see what
+      // you were rearranging — precisely when you most need to.
       const f  = Math.exp(-e.deltaY * .002);
       const s0 = cameraScale.get();
       const s1 = Math.min(Math.max(.06, s0 * f), 5);
@@ -1625,7 +1777,9 @@ export default function MindCanvas() {
             const parent = b;
             const depth = parent.depth + 1;
             const siblings = bubblesRef.current.filter(item => item.parentId === parent.id);
-            const R = ringRadius(getSize(parent) / 2, sizeForDepth(depth) / 2, siblings.length + 1);
+            const cr = sizeForDepth(depth) / 2;
+            const R = ringRadius(getSize(parent) / 2, cr, siblings.length + 1,
+              Math.max(cr, ...siblings.map(s => getSize(s) / 2)));
             const angle = siblings.length
               ? Math.atan2(parent.y - (byId[parent.parentId ?? '']?.y ?? parent.y), parent.x - (byId[parent.parentId ?? '']?.x ?? parent.x)) + Math.PI / 2
               : -Math.PI / 2;
@@ -1885,7 +2039,7 @@ export default function MindCanvas() {
                   boxShadow: '0 1px 3px rgba(0,0,0,.20), inset 0 1px 1.5px rgba(255,255,255,.65)',
                 }} />
               ) : (
-                <GlassBubbleSVG size={size} color={bubble.color} label={bubble.label}
+                <GlassBubbleSVG size={size} color={bubble.color} label={bubble.label} cameraScale={cameraScale}
                   isEditing={editingId === bubble.id} editValue={editValue}
                   onEditChange={setEditValue}
                   onEditSave={() => handleEditSave(bubble.id)}
@@ -1930,6 +2084,7 @@ export default function MindCanvas() {
                     ? () => recolorBubble(bubble.id, byId[bubble.parentId!]?.color ?? bubble.color)
                     : undefined}
                   onScale={next => resizeBubble(bubble.id, next)}
+                  counterScale={counterScale}
                 />
               )}
 
@@ -2102,6 +2257,7 @@ export default function MindCanvas() {
           saveError={saveError}
           hasUnsavedChanges={hasUnsavedChanges}
           savedMeta={savedMeta}
+          syncState={syncState}
           onSave={saveCanvas}
           onExport={() => exportBubbles(bubbles, { name: canvasName || undefined })}
           onImport={() => importInputRef.current?.click()}

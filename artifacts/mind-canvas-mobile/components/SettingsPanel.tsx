@@ -6,7 +6,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { useBubbles } from '@/context/BubbleContext';
+import { useBubbles, type SyncState } from '@/context/BubbleContext';
 
 import type { SaveFailure } from '@/lib/persistence';
 import { useSlideIn, slideOut } from '@/lib/animation';
@@ -25,6 +25,25 @@ function relativeTime(ts: number): string {
   if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
   const days = Math.round(hours / 24);
   return `${days} day${days === 1 ? '' : 's'} ago`;
+}
+
+/**
+ * One sentence on whether this device and the website are looking at the same
+ * canvas. Under manual saving that is genuinely the user's problem to manage,
+ * and until this line existed the app never volunteered the answer.
+ */
+function syncDescription(s: SyncState): string {
+  switch (s.kind) {
+    case 'unknown':
+      return 'Checking whether the website has a newer version…';
+    case 'unsaved':
+      return 'The website is still on the last saved version. Save to send these changes to it.';
+    case 'behind':
+      return `The website saved a newer version ${relativeTime(s.remoteSavedAt)}. `
+           + 'It will open here automatically once you finish editing.';
+    case 'in-sync':
+      return `In sync with the website as of ${relativeTime(s.lastChecked)}.`;
+  }
 }
 
 /** What to tell the user after a failed save — each cause needs different advice. */
@@ -52,7 +71,7 @@ function saveErrorMessage(reason: SaveFailure): string {
 export default function SettingsPanel({ onClose }: Props) {
   const {
     canvasName, setCanvasName, saving, saveCanvas, saveError,
-    hasUnsavedChanges, savedMeta,
+    hasUnsavedChanges, savedMeta, syncState,
     exportMap, importMap, clearCanvas,
   } = useBubbles();
   const insets = useSafeAreaInsets();
@@ -155,6 +174,16 @@ export default function SettingsPanel({ onClose }: Props) {
                 : 'Saving publishes this canvas so your website can pick it up.'}
         </Text>
 
+        {/* ── Are the two devices on the same canvas? ─────────────────── */}
+        <View style={styles.syncRow}>
+          <View style={[styles.syncDot, {
+            backgroundColor: syncState.kind === 'in-sync' ? 'hsl(150,45%,50%)'
+              : syncState.kind === 'unknown' ? 'hsl(0,0%,70%)'
+              : 'hsl(35,85%,55%)',
+          }]} />
+          <Text style={styles.syncText}>{syncDescription(syncState)}</Text>
+        </View>
+
         {/* ── Transfer ─────────────────────────────────────────────────── */}
         <Text style={[styles.sectionLabel, styles.sectionSpaced]}>Canvas file</Text>
         <View style={styles.row}>
@@ -221,6 +250,16 @@ const styles = StyleSheet.create({
     marginTop: 8, lineHeight: 17,
   },
   saveHintError: { color: 'hsl(12,55%,45%)' },
+  syncRow: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+    marginTop: 16, paddingTop: 12,
+    borderTopWidth: 1, borderTopColor: 'rgba(0,0,0,0.06)',
+  },
+  syncDot: { width: 7, height: 7, borderRadius: 3.5, marginTop: 5 },
+  syncText: {
+    flex: 1, fontSize: 12, fontFamily: 'Inter_400Regular',
+    color: '#6b7280', lineHeight: 17,
+  },
   row: { flexDirection: 'row', gap: 10 },
   rowBtn: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,

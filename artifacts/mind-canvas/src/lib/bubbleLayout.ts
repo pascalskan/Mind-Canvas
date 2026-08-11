@@ -22,15 +22,43 @@ export function sizeForDepth(depth: number): number {
   return DEPTH_SIZE[Math.min(depth, DEPTH_SIZE.length - 1)];
 }
 
-export function getSize(b: BubbleData): number {
-  return sizeForDepth(b.depth);
+/** A bubble's manual scale, clamped to the range the UI actually offers. */
+export function bubbleScale(b: BubbleData): number {
+  const s = b.scale ?? 1;
+  return Math.min(Math.max(s, SCALE_MIN), SCALE_MAX);
 }
 
-// Ring radius that fits `n` circles of radius `cr` around a parent of radius `pr`
-// without the siblings touching each other.
-export function ringRadius(pr: number, cr: number, n: number): number {
+/**
+ * A bubble's diameter in canonical (depth-based) space, INCLUDING its manual
+ * scale.
+ *
+ * The scale term is not cosmetic. This function feeds the geometry that decides
+ * where a child is seeded and where its stored angle/radial resolves to, while
+ * rendering used a separate, scale-aware size — so the two disagreed the moment
+ * anyone resized a bubble. Enlarging a parent left its children seeded at the
+ * unscaled radius, i.e. inside it; enlarging a child pushed it through its
+ * siblings. Both platforms had the same blind spot, so it survived sync too.
+ */
+export function getSize(b: BubbleData): number {
+  return sizeForDepth(b.depth) * bubbleScale(b);
+}
+
+/**
+ * Ring radius that fits `n` circles around a parent of radius `pr` without the
+ * siblings touching each other.
+ *
+ * `cr` is this child's radius; `maxSiblingR` is the radius of the LARGEST child
+ * on the ring, which is what the angular spacing actually has to clear. They
+ * differ only when siblings are scaled differently — and when they do, sizing
+ * the ring off `cr` alone lets a small bubble compute a tight ring that its
+ * large neighbour then overlaps. Defaults to `cr` for the uniform case.
+ */
+export function ringRadius(pr: number, cr: number, n: number, maxSiblingR: number = cr): number {
+  const biggest = Math.max(cr, maxSiblingR);
   const touching = pr + cr + GAP + cr * 0.55 + 12;
   if (n <= 1) return touching;
-  const spacing = (cr + GAP / 2) / Math.sin(Math.PI / n);
+  // Two adjacent circles of radius `biggest` sitting 2π/n apart on the ring
+  // need this much radius to keep a GAP between them.
+  const spacing = (biggest + GAP / 2) / Math.sin(Math.PI / n);
   return Math.max(touching, spacing);
 }
