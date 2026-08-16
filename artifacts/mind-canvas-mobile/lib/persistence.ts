@@ -220,6 +220,7 @@ function isValidBubble(b: unknown): b is BubbleData {
   if (o.radial   !== undefined && !isFiniteNumber(o.radial))      return false;
   if (o.scale    !== undefined && !isFiniteNumber(o.scale))       return false;
   if (!isValidNotes(o.notes))                                      return false;
+  if (o.archivedAt !== undefined && !isFiniteNumber(o.archivedAt))  return false;
   return true;
 }
 

@@ -30,6 +30,13 @@ export interface BubbleData {
   scale?:   number;
   /** Absent and empty mean the same thing; absent is what gets written. */
   notes?:   BubbleNote[];
+  /**
+   * Epoch ms of the moment this bubble was completed, or absent if it is still
+   * live. Completing cascades: a bubble and every descendant are stamped
+   * together, so no live bubble ever has an archived ancestor and the tree the
+   * archive shows is the tree that was completed.
+   */
+  archivedAt?: number;
 }
 
 /** Which client wrote a save — used only for prompt wording. */

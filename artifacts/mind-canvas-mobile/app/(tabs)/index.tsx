@@ -26,6 +26,7 @@ export default function MainScreen() {
     byId, setFocusedId, setEditSelection,
     enterEditMode, cancelEditMode, saveEditMode,
     cloudSaveOk, saveError, hasUnsavedChanges,
+    showArchived, setShowArchived, archivedCount,
   } = useBubbles();
 
   const insets = useSafeAreaInsets();
@@ -245,8 +246,17 @@ export default function MainScreen() {
         </View>
       )}
 
+      {showArchived && archivedCount === 0 && (
+        <View style={styles.archiveEmptyWrap} pointerEvents="none">
+          <Text style={styles.archiveEmpty}>
+            Nothing completed yet. Completing a bubble moves it here, with
+            everything inside it.
+          </Text>
+        </View>
+      )}
+
       {/* ── Hint ────────────────────────────────────────────────────────── */}
-      {!focusedId && !editMode && !showAdd && !textHidden && (
+      {!focusedId && !editMode && !showAdd && !textHidden && !showArchived && (
         <View style={[styles.hintWrap, { top: topInset + 10 }]} pointerEvents="none">
           <Text style={styles.hint}>tap to focus · hold to add child · pinch to zoom</Text>
         </View>
@@ -259,7 +269,19 @@ export default function MainScreen() {
           taps meant for it. */}
       {!showAdd && !showSettings && !showNotes && (
         <View style={[styles.toolbar, { bottom: bottomInset + 16 }]} pointerEvents="box-none">
-          {editMode ? (
+          {showArchived ? (
+            <View style={styles.toolbarRow} pointerEvents="auto">
+              <TouchableOpacity
+                style={[styles.pill, styles.pillArchiveOn]}
+                onPress={() => { setShowArchived(false); Haptics.selectionAsync(); }}
+              >
+                <Feather name="corner-up-left" size={15} color="#fff" />
+                <Text style={[styles.pillText, { color: '#fff' }]}>
+                  Leave archive
+                </Text>
+              </TouchableOpacity>
+            </View>
+          ) : editMode ? (
             <View style={styles.toolbarRow} pointerEvents="auto">
               <TouchableOpacity style={[styles.pill, styles.pillDanger]} onPress={cancelEdit}>
                 <Feather name="x" size={16} color="#ef4444" />
@@ -277,6 +299,19 @@ export default function MainScreen() {
             // save via SaveAvailablePrompt instead of a button you have to know
             // to press.
             <View style={styles.toolbarRow} pointerEvents="auto">
+              <TouchableOpacity
+                style={[styles.pill, styles.pillEdit, styles.pillIconOnly]}
+                onPress={() => { setShowArchived(true); Haptics.selectionAsync(); }}
+                accessibilityRole="button"
+                accessibilityLabel={`Show archived${archivedCount > 0 ? `, ${archivedCount}` : ''}`}
+              >
+                <Feather name="archive" size={16} color="#6b7280" />
+                {archivedCount > 0 && (
+                  <Text style={[styles.pillText, { color: '#9ca3af', fontSize: 12 }]}>
+                    {archivedCount}
+                  </Text>
+                )}
+              </TouchableOpacity>
               <TouchableOpacity style={[styles.pill, styles.pillEdit]} onPress={enterEdit}>
                 <Feather name="edit-2" size={14} color="#6b7280" />
                 <Text style={[styles.pillText, { color: '#6b7280' }]}>Edit</Text>
@@ -447,6 +482,14 @@ const styles = StyleSheet.create({
     color: '#9ca3af', paddingHorizontal: 2,
   },
   crumbTextActive: { color: '#374151', fontFamily: 'Inter_500Medium' },
+  archiveEmptyWrap: {
+    position: 'absolute', left: 40, right: 40, top: '44%',
+    alignItems: 'center', zIndex: 10,
+  },
+  archiveEmpty: {
+    fontSize: 13, fontFamily: 'Inter_400Regular', color: '#9ca3af',
+    textAlign: 'center', lineHeight: 19,
+  },
   hintWrap: {
     position: 'absolute', left: 0, right: 0,
     alignItems: 'center', zIndex: 10,
@@ -487,6 +530,8 @@ const styles = StyleSheet.create({
   },
   pillText: { fontSize: 14, fontFamily: 'Inter_500Medium' },
   pillEdit: { backgroundColor: 'rgba(255,255,255,0.92)' },
+  pillIconOnly: { paddingHorizontal: 13 },
+  pillArchiveOn: { backgroundColor: 'rgba(90,80,110,0.85)' },
   pillAdd:  { backgroundColor: 'rgba(90,80,110,0.85)' },
   pillDone: { backgroundColor: 'rgba(80,110,90,0.85)' },
   pillDanger: { backgroundColor: 'rgba(255,255,255,0.92)' },

@@ -31,6 +31,9 @@ import {
 import { applyRootDrag, applyChildDrag, shouldWriteBubbleMotionValues, isBackgroundTap, descendantsOf as descendantsOfPure } from '../lib/dragHelpers';
 import SettingsPanel from './SettingsPanel';
 import SaveAvailablePrompt from './SaveAvailablePrompt';
+import CompletionPrompt, {
+  COMPLETE_FADE_MS, COMPLETE_FILL_MS, COMPLETE_POP_MS, COMPLETE_TOTAL_MS,
+} from './CompletionPrompt';
 import NotesPanel, { DISCARD_PROMPT } from './NotesPanel';
 import { useBubbleState } from '../hooks/useBubbleState';
 
@@ -605,7 +608,7 @@ function isTypingTarget(t: EventTarget | null): boolean {
 // ../lib/bubbleLayout so mobile runs the identical rule and the contract test
 // can hold the two copies to it.
 
-function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange, onEditSave, onEditCancel, onLabelClick, cameraScale, hideLabel, isPillar }: {
+function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange, onEditSave, onEditCancel, onLabelClick, cameraScale, hideLabel, isPillar, completing }: {
   size: number; color: string; label: string;
   isEditing?: boolean; editValue?: string;
   onEditChange?: (v: string) => void; onEditSave?: () => void; onEditCancel?: () => void;
@@ -619,6 +622,8 @@ function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange
    * hold-Tab view and the fade that strips labels off distant bubbles.
    */
   isPillar?: boolean;
+  /** Mid-completion: the glass empties and colour rises to the brim. */
+  completing?: boolean;
 }) {
   const uid = (color + Math.round(size)).replace(/[^a-zA-Z0-9]/g, '');
   const fontSize = Math.max(size * 0.135, 8.5);
@@ -680,12 +685,39 @@ function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange
             <stop offset="0%"   stopColor={color} stopOpacity=".72"/>
             <stop offset="100%" stopColor={color} stopOpacity="0"/>
           </radialGradient>
+          {/* Keeps the rising fill inside the sphere. */}
+          <clipPath id={`body-${uid}`}>
+            <circle cx={size/2} cy={size/2} r={size/2-1}/>
+          </clipPath>
         </defs>
-        <circle cx={size/2} cy={size/2} r={size/2-1} fill={`url(#bg-${uid})`}/>
+        {/* The glass itself. On completion it empties out, leaving only the
+            rim — which is what makes the colour rising behind it read as a
+            vessel filling rather than the bubble merely changing colour. */}
+        <motion.g
+          animate={{ opacity: completing ? .08 : 1 }}
+          transition={{ duration: COMPLETE_FADE_MS / 1000, ease: 'easeOut' }}>
+          <circle cx={size/2} cy={size/2} r={size/2-1} fill={`url(#bg-${uid})`}/>
+          <circle cx={size*.64} cy={size*.68} r={size*.38} fill={`url(#glow-${uid})`}/>
+          <ellipse cx={size*.28} cy={size*.24} rx={size*.17} ry={size*.10}
+            fill={`url(#spec-${uid})`} transform={`rotate(-40,${size*.28},${size*.24})`}/>
+        </motion.g>
+
+        {completing && (
+          <motion.rect
+            x={0} width={size} fill={color}
+            clipPath={`url(#body-${uid})`}
+            initial={{ y: size, height: 0 }}
+            animate={{ y: 0, height: size }}
+            transition={{
+              duration: COMPLETE_FILL_MS / 1000,
+              delay: COMPLETE_FADE_MS / 1000,
+              ease: [.4, 0, .3, 1],
+            }}
+          />
+        )}
+
+        {/* Rim last and never faded: the outline of the vessel being filled. */}
         <circle cx={size/2} cy={size/2} r={size/2-1} fill={`url(#rim-${uid})`}/>
-        <circle cx={size*.64} cy={size*.68} r={size*.38} fill={`url(#glow-${uid})`}/>
-        <ellipse cx={size*.28} cy={size*.24} rx={size*.17} ry={size*.10}
-          fill={`url(#spec-${uid})`} transform={`rotate(-40,${size*.28},${size*.24})`}/>
       </svg>
 
       {isEditing ? (
@@ -825,7 +857,7 @@ function colorsAreClose(first: string, second: string) {
 //                      the whole subtree, and a near-duplicate is challenged.
 //   depth 1+         — the color is that one bubble's own. It never touches its
 //                      parent or its children, and needs no duplicate check.
-function BubbleEditPanel({ color, scale, isPillar, inheritedColor, existingColors, onChoose, onScale, onResetColor, counterScale }: {
+function BubbleEditPanel({ color, scale, isPillar, inheritedColor, existingColors, onChoose, onScale, onResetColor, onComplete, counterScale }: {
   color: string;
   scale: number;
   isPillar: boolean;
@@ -834,6 +866,8 @@ function BubbleEditPanel({ color, scale, isPillar, inheritedColor, existingColor
   onChoose: (color: string) => void;
   onScale: (scale: number) => void;
   onResetColor?: () => void;
+  /** Completing archives this bubble and everything under it. */
+  onComplete?: () => void;
   /**
    * 1 / camera scale. This panel lives inside the world-space transform, so
    * without it the controls shrank with the canvas — unusable at exactly the
@@ -914,6 +948,23 @@ function BubbleEditPanel({ color, scale, isPillar, inheritedColor, existingColor
                 ))}
               </select>
             </div>
+
+            {/* Set apart at the foot of the panel: everything above restyles
+                the bubble, this takes it off the canvas. */}
+            {onComplete && (
+              <div className="mt-3.5 pt-3 border-t border-gray-100">
+                <button
+                  onClick={onComplete}
+                  className="w-full flex items-center justify-center gap-2 font-light rounded-full"
+                  style={{
+                    minHeight: 44, fontSize: 13.5,
+                    color: 'hsl(150,32%,34%)', background: 'hsl(150,38%,94%)',
+                  }}>
+                  <span style={{ fontSize: 13, lineHeight: 1 }}>✓</span>
+                  Complete bubble
+                </button>
+              </div>
+            )}
           </>
         )}
       </div>
@@ -1227,6 +1278,12 @@ export default function MindCanvas() {
   // only in the panel because "n" can close the panel from outside it, and
   // that route has to be able to ask before throwing the work away.
   const [notesDirty,     setNotesDirty]     = useState(false);
+  /** Archive view: the live canvas hides, completed work takes its place. */
+  const [showArchived,   setShowArchived]   = useState(false);
+  /** The bubble the confirmation is asking about, before anything happens. */
+  const [pendingComplete, setPendingComplete] = useState<string | null>(null);
+  /** The bubble mid-animation. It is still on the canvas until the pop ends. */
+  const [completingId,   setCompletingId]   = useState<string | null>(null);
   // The breadcrumb sizes itself against the window, so it has to know when the
   // window changes. The existing resize effect re-fits the CAMERA and is
   // debounced by 200ms for that reason; the bar wants the width immediately.
@@ -1265,7 +1322,23 @@ export default function MindCanvas() {
   // Rendered diameters, content-scaled and hierarchy-clamped. Same pure function
   // the animation loop and camera use, so the drawn size always matches the size
   // the solver reserved space for.
-  const sizeMap = useMemo(() => viewSizes(bubbles, focusedId).sizes, [bubbles, focusedId]);
+  /**
+   * What the canvas is currently showing.
+   *
+   * `bubbles` stays whole — it is what gets persisted and published, archive
+   * and all. Everything to do with drawing, laying out and colliding works off
+   * this instead, so an archived subtree stops taking part in the physics
+   * rather than merely being hidden behind it.
+   *
+   * A bubble being completed is deliberately still here: it has to stay on
+   * screen long enough to play its animation.
+   */
+  const stage = useMemo(
+    () => bubbles.filter(b => (b.archivedAt !== undefined) === showArchived || b.id === completingId),
+    [bubbles, showArchived, completingId],
+  );
+
+  const sizeMap = useMemo(() => viewSizes(stage, focusedId).sizes, [stage, focusedId]);
 
   // ── Refs readable from the rAF loop ──────────────────────────────────────
 
@@ -1285,7 +1358,7 @@ export default function MindCanvas() {
   const editModeRef = useRef(false);
   const focusedIdRef = useRef<string | null>(null);
   const draggingRef = useRef<string | null>(null);
-  bubblesRef.current  = bubbles;
+  bubblesRef.current  = stage;
   editModeRef.current = editMode;
   focusedIdRef.current = focusedId;
 
@@ -1624,6 +1697,16 @@ export default function MindCanvas() {
   // Notes hang off the focused bubble, so leaving it closes the panel rather
   // than leaving it open over a bubble the user is no longer inside.
   useEffect(() => { if (!focusedId) setShowNotes(false); }, [focusedId]);
+
+  // The two views share nothing: a bubble focused in one does not exist in the
+  // other, and edit mode has no business operating on completed work.
+  useEffect(() => {
+    setFocusedId(null);
+    setEditSelection(null);
+    setEditingId(null);
+    setShowNotes(false);
+    if (editMode) cancelEditMode();
+  }, [showArchived]);
   useEffect(() => { if (editMode)   setShowNotes(false); }, [editMode]);
 
   // ── Pan / Pinch-to-zoom ──────────────────────────────────────────────────
@@ -2048,6 +2131,49 @@ export default function MindCanvas() {
     }));
   };
 
+  // ── Completing a bubble ──────────────────────────────────────────────────
+  //
+  // Completion cascades to the whole subtree, so a bubble and everything under
+  // it are stamped in one write. That invariant is what lets the rest of the
+  // app assume no live bubble has an archived ancestor.
+
+  /** The bubble plus every descendant — what a completion actually covers. */
+  const completionScope = useCallback((id: string): BubbleData[] => {
+    const family = new Set<string>([id, ...descendantsOf(id)]);
+    return bubbles.filter(b => family.has(b.id));
+  }, [bubbles, descendantsOf]);
+
+  const archiveSubtree = useCallback((id: string) => {
+    const family = new Set<string>([id, ...descendantsOf(id)]);
+    const at = Date.now();
+    setBubbles(prev => prev.map(b => (family.has(b.id) ? { ...b, archivedAt: at } : b)));
+    // Completing is confirmed on its own terms, with its own prompt, so it has
+    // to outlive the edit session it was started from. Edit mode reverts to
+    // this snapshot on Cancel, so the completion is written into the snapshot
+    // too — otherwise Cancel would quietly undo a thing the user was asked
+    // about and watched pop, while correctly reverting everything else.
+    setPreEditBubbles(prev => prev
+      ? prev.map(b => (family.has(b.id) ? { ...b, archivedAt: at } : b))
+      : prev);
+    // Standing inside something that has just been archived would leave the
+    // camera in an empty room, so step out to where it used to hang.
+    if (focusedId && family.has(focusedId)) {
+      setFocusedId(byId[id]?.parentId ?? null);
+    }
+    setEditSelection(null);
+    setEditingId(null);
+  }, [descendantsOf, setBubbles, focusedId, byId]);
+
+  /** Runs the animation to its end, then archives. */
+  const confirmComplete = useCallback((id: string) => {
+    setPendingComplete(null);
+    setCompletingId(id);
+    window.setTimeout(() => {
+      archiveSubtree(id);
+      setCompletingId(null);
+    }, COMPLETE_TOTAL_MS);
+  }, [archiveSubtree]);
+
   // ── Delete bubble (and its whole subtree) ────────────────────────────────
 
   const deleteBubble = (id: string) => {
@@ -2101,6 +2227,8 @@ export default function MindCanvas() {
     comfortChars: 20,
   });
   const trailClipped = fullTrail.length > crumbFit.count;
+  const archivedCount = bubbles.filter(b => b.archivedAt !== undefined).length;
+
   const breadcrumb   = fullTrail.slice(-crumbFit.count)
     .map((l, i, arr) => abbreviateCrumb(
       l as string,
@@ -2221,7 +2349,7 @@ export default function MindCanvas() {
 
         <CoordinateField />
 
-        {bubbles.filter(b => isInThreeLayerView(b, focusedId, byId)).map(bubble => {
+        {stage.filter(b => isInThreeLayerView(b, focusedId, byId)).map(bubble => {
           const layer = relativeLayer(bubble.id, focusedId, byId);
           // Size always comes from the relative layer, matching the solver.
           const size  = sizeMap[bubble.id] ?? getSize(bubble);
@@ -2266,9 +2394,15 @@ export default function MindCanvas() {
                 zIndex: isEditSelected ? 1000 : 100 - bubble.depth,
               }}
               initial={false}
-              animate={{ opacity, scale: isFocused || isEditSelected ? 1.04 : 1, filter: 'blur(0px)' }}
+              // The pop is the last beat of completion: nothing happens while
+              // the glass empties and refills, then it goes all at once.
+              animate={completingId === bubble.id
+                ? { opacity: 0, scale: 1.34, filter: 'blur(0px)' }
+                : { opacity, scale: isFocused || isEditSelected ? 1.04 : 1, filter: 'blur(0px)' }}
               whileHover={interactive && !muted && editingId !== bubble.id ? { scale: isFocused ? 1.04 : 1.03, filter: 'blur(0px) brightness(1.05)' } : undefined}
-              transition={{ type: 'spring', stiffness: 55, damping: 16 }}
+              transition={completingId === bubble.id
+                ? { duration: COMPLETE_POP_MS / 1000, delay: (COMPLETE_FADE_MS + COMPLETE_FILL_MS) / 1000, ease: [.2, .9, .3, 1] }
+                : { type: 'spring', stiffness: 55, damping: 16 }}
               onPointerDown={e => onBubbleDown(e, bubble.id)}
               onPointerMove={onBubbleMove}
               onPointerUp={e => onBubbleUp(e, bubble.id)}
@@ -2285,8 +2419,9 @@ export default function MindCanvas() {
                 <GlassBubbleSVG size={size} color={bubble.color} label={bubble.label} cameraScale={cameraScale}
                   // A bubble being renamed keeps its field - blanking the text
                   // someone is actively typing into is never what they meant.
-                  hideLabel={textHidden && editingId !== bubble.id}
+                  hideLabel={(textHidden || completingId === bubble.id) && editingId !== bubble.id}
                   isPillar={bubble.depth === 0}
+                  completing={completingId === bubble.id}
                   isEditing={editingId === bubble.id} editValue={editValue}
                   onEditChange={setEditValue}
                   onEditSave={() => handleEditSave(bubble.id)}
@@ -2331,6 +2466,7 @@ export default function MindCanvas() {
                     ? () => recolorBubble(bubble.id, byId[bubble.parentId!]?.color ?? bubble.color)
                     : undefined}
                   onScale={next => resizeBubble(bubble.id, next)}
+                  onComplete={() => setPendingComplete(bubble.id)}
                   counterScale={counterScale}
                 />
               )}
@@ -2503,6 +2639,58 @@ export default function MindCanvas() {
           </motion.button>
         </div>
       )}
+
+      {/* Archive toggle. Sits under Settings rather than in the bottom bar
+          because it switches WHICH canvas you are looking at, which is a
+          different kind of act from editing the one in front of you. */}
+      {!editMode && !showSettings && !showAddPanel && !quickCreate && (
+        <div className="absolute top-6 z-50 pointer-events-auto"
+          style={{ left: 24, top: 76 }}
+          onPointerDown={e => e.stopPropagation()}>
+          <motion.button
+            style={{
+              ...pillBase,
+              ...(showArchived
+                ? { background: 'rgba(90,80,110,.9)', boxShadow: '0 4px 24px rgba(90,80,110,.18)' }
+                : null),
+            }}
+            className={`flex items-center gap-2 font-light ${showArchived ? 'text-white' : 'text-gray-500'}`}
+            whileHover={{ scale: 1.04 }} whileTap={{ scale: .97 }}
+            aria-pressed={showArchived}
+            onClick={e => { e.stopPropagation(); setShowArchived(v => !v); }}>
+            <span style={{ fontSize: 13, lineHeight: 1, opacity: .8 }}>🗀</span>
+            {showArchived ? 'Hide archived' : 'Show archived'}
+            {!showArchived && archivedCount > 0 && (
+              <span className="font-light" style={{ fontSize: 11.5, color: '#a3a3ad' }}>
+                {archivedCount}
+              </span>
+            )}
+          </motion.button>
+        </div>
+      )}
+
+      {/* Nothing completed yet — say so rather than showing a blank canvas. */}
+      {showArchived && archivedCount === 0 && (
+        <p className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-30 pointer-events-none select-none text-center font-light text-gray-400"
+          style={{ fontSize: 13, letterSpacing: '.03em' }}>
+          Nothing completed yet. Completing a bubble moves it here, with
+          everything inside it.
+        </p>
+      )}
+
+      {pendingComplete && byId[pendingComplete] && (() => {
+        const scope = completionScope(pendingComplete);
+        return (
+          <CompletionPrompt
+            label={byId[pendingComplete]!.label}
+            color={byId[pendingComplete]!.color}
+            descendants={scope.length - 1}
+            notes={scope.reduce((n, b) => n + (b.notes?.length ?? 0), 0)}
+            onConfirm={() => confirmComplete(pendingComplete)}
+            onCancel={() => setPendingComplete(null)}
+          />
+        );
+      })()}
 
       {showSettings && (
         <SettingsPanel

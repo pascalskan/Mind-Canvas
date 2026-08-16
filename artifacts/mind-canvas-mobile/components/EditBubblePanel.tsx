@@ -4,6 +4,7 @@ import {
   TouchableOpacity, View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Feather } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useBubbles } from '@/context/BubbleContext';
 import { PILLAR_COLORS, SCALE_OPTIONS } from '@/lib/bubbleLayout';
@@ -17,7 +18,8 @@ interface Props {
 
 export default function EditBubblePanel({ bubbleId, focusLabel }: Props) {
   const {
-    byId, renameBubble, recolorBubble, resizeBubble, deleteBubble,
+    byId, bubbles, renameBubble, recolorBubble, resizeBubble, deleteBubble,
+    completeBubble,
     setEditSelection, focusedId, setFocusedId,
   } = useBubbles();
   const insets = useSafeAreaInsets();
@@ -48,6 +50,48 @@ export default function EditBubblePanel({ bubbleId, focusLabel }: Props) {
     setScale(s);
     resizeBubble(bubbleId, s);
     Haptics.selectionAsync();
+  };
+
+  /**
+   * Completing takes the bubble and everything under it off the canvas.
+   *
+   * The counts go in the prompt because they are the whole reason to ask: the
+   * bubble you tapped may be one of twenty that disappear together.
+   */
+  const handleComplete = () => {
+    const family = new Set<string>([bubbleId]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const b of bubbles) {
+        if (b.parentId && family.has(b.parentId) && !family.has(b.id)) {
+          family.add(b.id); grew = true;
+        }
+      }
+    }
+    const inside = family.size - 1;
+    const notes = bubbles
+      .filter(b => family.has(b.id))
+      .reduce((n, b) => n + (b.notes?.length ?? 0), 0);
+
+    Alert.alert(
+      `Complete "${bubble.label}"?`,
+      `${family.size} bubble${family.size === 1 ? '' : 's'}`
+      + (inside > 0 ? ` — this one and ${inside} inside it` : '')
+      + (notes > 0 ? `, and ${notes} note${notes === 1 ? '' : 's'} written on them` : '')
+      + ' will be stored in the archive.\n\n'
+      + 'They leave the canvas but nothing is deleted — Show archived brings '
+      + 'them back into view at any time.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Complete', onPress: () => {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            completeBubble(bubbleId);
+          },
+        },
+      ],
+    );
   };
 
   const handleDelete = () => {
@@ -82,6 +126,10 @@ export default function EditBubblePanel({ bubbleId, focusLabel }: Props) {
         <Text style={styles.depth}>
           depth {bubble.depth} {bubble.parentId ? '' : '· root'}
         </Text>
+        <TouchableOpacity style={styles.completeBtn} onPress={handleComplete}>
+          <Feather name="check" size={14} color="hsl(150,32%,34%)" />
+          <Text style={styles.completeText}>Complete</Text>
+        </TouchableOpacity>
         <TouchableOpacity style={styles.deleteBtn} onPress={handleDelete}>
           <Text style={styles.deleteText}>Delete</Text>
         </TouchableOpacity>
@@ -136,6 +184,14 @@ export default function EditBubblePanel({ bubbleId, focusLabel }: Props) {
 }
 
 const styles = StyleSheet.create({
+  completeBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    paddingHorizontal: 12, height: 34, borderRadius: 17,
+    backgroundColor: 'hsl(150,38%,94%)',
+  },
+  completeText: {
+    fontSize: 13, fontFamily: 'Inter_500Medium', color: 'hsl(150,32%,34%)',
+  },
   panel: {
     position: 'absolute',
     bottom: 0, left: 0, right: 0,

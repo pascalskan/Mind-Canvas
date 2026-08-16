@@ -143,6 +143,16 @@ describe('canvasSignature agrees byte-for-byte across platforms', () => {
   // A bubble that never had notes and one whose last note was deleted must
   // hash identically, or removing the final note would leave the canvas
   // permanently "unsaved" against a save that already contains it.
+  // Completing is an unsaved change like any other — if the fingerprint
+  // ignored it, archiving a whole branch would leave the unsaved dot dark and
+  // the completion would never reach the other device.
+  it('both platforms see completing a bubble as a change', () => {
+    const done = SAMPLE.map(b => (b.id === 'b1' ? { ...b, archivedAt: 1_700_000_000_000 } : b));
+    expect(mobileSignature(done)).not.toBe(mobileSignature(SAMPLE));
+    expect(webSignature(done as never)).not.toBe(webSignature(SAMPLE as never));
+    expect(mobileSignature(done)).toBe(webSignature(done as never));
+  });
+
   it('an absent notes array and a removed one hash the same', () => {
     const stripped = SAMPLE_WITH_NOTES.map(b => {
       const { notes: _drop, ...rest } = b;
@@ -190,6 +200,21 @@ describe('the three validators accept and reject the same maps', () => {
   it('all three accept a map carrying notes', () => {
     const v = verdicts(SAMPLE_WITH_NOTES);
     expect(v).toEqual({ mobile: true, web: true, server: true });
+  });
+
+  it('all three accept a completed bubble', () => {
+    const v = verdicts([
+      { ...SAMPLE[0], archivedAt: 1_700_000_000_000 },
+      { ...SAMPLE[1], archivedAt: 1_700_000_000_000 },
+    ]);
+    expect(v).toEqual({ mobile: true, web: true, server: true });
+  });
+
+  it.each([
+    ['a non-finite archivedAt', [{ ...SAMPLE[0], archivedAt: null }]],
+    ['a string archivedAt',     [{ ...SAMPLE[0], archivedAt: 'yes' }]],
+  ])('all three reject %s', (_label, bubbles) => {
+    expect(verdicts(bubbles as unknown[])).toEqual({ mobile: false, web: false, server: false });
   });
 
   it('all three accept an empty notes array', () => {

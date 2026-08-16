@@ -183,6 +183,7 @@ export function canvasSignature(bubbles: BubbleData[], name?: string): string {
       Math.round(b.x), Math.round(b.y),
       b.angle?.toFixed(3) ?? '', b.radial?.toFixed(3) ?? '', b.scale ?? '',
       notesSignature(b.notes),
+      b.archivedAt ?? '',
     ].join('~'))
     .sort();
   return `${name ?? ''}::${parts.join('|')}`;

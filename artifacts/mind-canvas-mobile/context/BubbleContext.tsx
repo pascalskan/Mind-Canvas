@@ -105,6 +105,19 @@ interface BubbleContextValue {
    * exists to prevent. Passing an empty array clears the notes entirely.
    */
   setBubbleNotes: (bubbleId: string, notes: BubbleNote[]) => void;
+
+  /**
+   * Completing archives a bubble and every descendant in one write, so no live
+   * bubble is ever left with an archived ancestor. The archive is a field on
+   * the shared map, not a separate store, so a bubble completed here is
+   * completed on the website too as soon as the canvas is saved.
+   */
+  completeBubble: (id: string) => void;
+  /** Archive view: the live canvas hides and completed work takes its place. */
+  showArchived:    boolean;
+  setShowArchived: (on: boolean) => void;
+  /** How many bubbles are sitting in the archive. */
+  archivedCount:   number;
   updateBubblePosition: (id: string, pos: { x: number; y: number; angle?: number; radial?: number }) => void;
   /** Atomically update positions for many bubbles in a single render. */
   batchUpdatePositions: (updates: { id: string; x: number; y: number; angle?: number; radial?: number }[]) => void;
@@ -436,9 +449,30 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
     });
   }, [bubbles, canvasName, loaded]);
 
-  const byId = useMemo(
-    () => Object.fromEntries(bubbles.map(b => [b.id, b])),
+  /**
+   * What this app shows: everything that has not been completed.
+   *
+   * Completion is a desktop action for now, but a map archived there syncs
+   * here, and without this filter those bubbles would come back onto the phone
+   * canvas as though they were still live. The raw `bubbles` state stays whole
+   * behind it — that is what gets saved and published, archive included — so
+   * nothing is lost by hiding them.
+   */
+  const [showArchived, setShowArchived] = useState(false);
+
+  const stage = useMemo(
+    () => bubbles.filter(b => (b.archivedAt !== undefined) === showArchived),
+    [bubbles, showArchived],
+  );
+
+  const archivedCount = useMemo(
+    () => bubbles.filter(b => b.archivedAt !== undefined).length,
     [bubbles],
+  );
+
+  const byId = useMemo(
+    () => Object.fromEntries(stage.map(b => [b.id, b])),
+    [stage],
   );
 
   const hasUnsavedChanges = useMemo(
@@ -597,6 +631,30 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
     setBubbles(prev => prev.map(b => b.id === id ? { ...b, color } : b));
   }, []);
 
+  // ── Completing ────────────────────────────────────────────────────────────
+
+  const completeBubble = useCallback((id: string) => {
+    setBubbles(prev => {
+      // Walk the tree off `prev`, not off the filtered view: the descendants
+      // being archived have to be found in the whole map.
+      const family = new Set<string>([id]);
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (const b of prev) {
+          if (b.parentId && family.has(b.parentId) && !family.has(b.id)) {
+            family.add(b.id);
+            grew = true;
+          }
+        }
+      }
+      const at = Date.now();
+      return prev.map(b => (family.has(b.id) ? { ...b, archivedAt: at } : b));
+    });
+    setFocusedId(null);
+    setEditSelection(null);
+  }, []);
+
   // ── Notes ─────────────────────────────────────────────────────────────────
   // The sheet edits a draft and calls this once, on Save. Nothing reaches the
   // canvas until then.
@@ -745,7 +803,8 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const value = useMemo<BubbleContextValue>(() => ({
-    bubbles, focusedId, editMode, editSelection, byId, cloudSaveOk,
+    bubbles: stage, focusedId, editMode, editSelection, byId, cloudSaveOk,
+    completeBubble, showArchived, setShowArchived, archivedCount,
     canvasName, setCanvasName, saving, saveCanvas, saveError,
     hasUnsavedChanges, savedMeta, syncState,
     pendingSave, acceptPendingSave, dismissPendingSave,
@@ -755,7 +814,8 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
     updateBubblePosition, batchUpdatePositions, resyncPositions, noteInteraction,
     exportMap, importMap, clearCanvas,
   }), [
-    bubbles, focusedId, editMode, editSelection, byId, cloudSaveOk,
+    stage, focusedId, editMode, editSelection, byId, cloudSaveOk,
+    completeBubble, showArchived, archivedCount,
     canvasName, saving, saveCanvas, saveError, hasUnsavedChanges, savedMeta, syncState,
     pendingSave, acceptPendingSave, dismissPendingSave,
     enterEditMode, cancelEditMode, saveEditMode,

@@ -38,6 +38,13 @@ export interface BubbleData {
   scale?:    number;
   /** Absent and empty mean the same thing; absent is what gets written. */
   notes?:    BubbleNote[];
+  /**
+   * Epoch ms of the moment this bubble was completed, or absent if it is still
+   * live. Completing cascades: a bubble and every descendant are stamped
+   * together, so no live bubble ever has an archived ancestor and the tree the
+   * archive shows is the tree that was completed.
+   */
+  archivedAt?: number;
 }
 
 /** Which client wrote a save — used only for prompt wording. */
@@ -237,6 +244,7 @@ export function isValidBubble(b: unknown): b is BubbleData {
   if (o.radial   !== undefined && !isFiniteNumber(o.radial))      return false;
   if (o.scale    !== undefined && !isFiniteNumber(o.scale))      return false;
   if (!isValidNotes(o.notes))                                     return false;
+  if (o.archivedAt !== undefined && !isFiniteNumber(o.archivedAt)) return false;
   return true;
 }
 

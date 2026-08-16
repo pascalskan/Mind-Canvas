@@ -35,6 +35,8 @@ export interface Bubble {
   radial?: number;
   scale?: number;
   notes?: BubbleNote[];
+  /** Epoch ms this bubble was completed; absent while it is still live. */
+  archivedAt?: number;
 }
 
 export interface MapPayload {
@@ -72,6 +74,7 @@ function isValidBubble(b: unknown): b is Bubble {
   if (o['radial'] !== undefined && !isFiniteNumber(o['radial'])) return false;
   if (o['scale'] !== undefined && !isFiniteNumber(o['scale'])) return false;
   if (!isValidNotes(o['notes'])) return false;
+  if (o['archivedAt'] !== undefined && !isFiniteNumber(o['archivedAt'])) return false;
   return true;
 }
 
