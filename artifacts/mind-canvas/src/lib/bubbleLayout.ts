@@ -96,6 +96,105 @@ export const CRUMB_LIMIT = 3;
  * Duplicated on web and mobile like the rest of this file; syncContract.test.ts
  * asserts the two copies agree.
  */
+/**
+ * Geometry of the breadcrumb bar, in the platform's own units.
+ *
+ * Web and mobile differ in font, padding and what chrome the bar carries, so
+ * each measures itself; the arithmetic that spends the space is shared.
+ */
+export interface CrumbMetrics {
+  /** Width the whole bar may occupy. */
+  barWidth: number;
+  /** Chrome present whatever happens — the bar's own padding, plus Home. */
+  fixed: number;
+  /** One separator chevron, including its margins. */
+  chevron: number;
+  /** Padding either side of one crumb's text. */
+  crumbPadding: number;
+  /** Anything the current crumb carries that ancestors do not (its dot). */
+  currentExtra: number;
+  /** The leading "…" standing in for levels not shown. */
+  ellipsis: number;
+  /** Average width of one character at the bar's font size. */
+  charWidth: number;
+  /** Below this a crumb says nothing worth the space it costs. */
+  minChars: number;
+  /** Past this a longer crumb only crowds its neighbours. */
+  maxChars: number;
+  /**
+   * How much of the current bubble's name must survive before room is spent
+   * on an older level at all. This is the rule that keeps the trail useful:
+   * a third crumb is worth having only if it costs the name you are reading
+   * nothing, because "where am I" is answered by the current bubble and its
+   * parent, and everything above that is a bonus.
+   */
+  comfortChars: number;
+}
+
+export interface CrumbFit {
+  /** How many of the newest levels to render. */
+  count: number;
+  /** Characters allowed to the bubble you are in. */
+  currentChars: number;
+  /** Characters allowed to each level above it. */
+  ancestorChars: number;
+}
+
+function clampInt(v: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, Math.floor(v)));
+}
+
+/**
+ * Decides how much of the trail actually fits, rather than assuming.
+ *
+ * A fixed crumb count with fixed character budgets cannot work across a phone
+ * and a desktop: whatever number suits one overflows or wastes the other. So
+ * the bar measures itself and spends what it has.
+ *
+ * The current bubble and its parent are the pair that answers "where am I",
+ * and they are never dropped. Anything older is a bonus, shown only when it
+ * genuinely fits — a third crumb squeezed to four characters tells you less
+ * than the "…" that replaces it.
+ *
+ * The current bubble takes a double share of the text room, because it is the
+ * one being read; its ancestors only need to be recognisable.
+ *
+ * The returned budgets are a best estimate from an average character width, so
+ * the renderers still cap each crumb to one line and let it ellipsize. This
+ * decides what SHOULD fit; that stops an unusually wide label from overflowing anyway.
+ */
+export function fitCrumbs(total: number, m: CrumbMetrics): CrumbFit {
+  if (total <= 0) return { count: 0, currentChars: 0, ancestorChars: 0 };
+
+  const floorCount = Math.min(total, 2);
+  const ceilCount  = Math.min(total, CRUMB_LIMIT);
+
+  for (let count = ceilCount; count >= floorCount; count--) {
+    const hidesOlder = total > count;
+    const chrome =
+      m.fixed
+      + count * (m.chevron + m.crumbPadding)
+      + m.currentExtra
+      + (hidesOlder ? m.ellipsis + m.chevron : 0);
+
+    // The current crumb counts twice, so `count + 1` shares in all.
+    const perShare = (m.barWidth - chrome) / (count + 1) / m.charWidth;
+    const currentChars  = clampInt(perShare * 2, m.minChars, m.maxChars);
+    const ancestorChars = clampInt(perShare,     m.minChars, m.maxChars);
+
+    // Take this many levels only if the bubble you are IN still reads
+    // properly. Otherwise drop one and try again: an extra ancestor bought by
+    // truncating the current name is a bad trade, and it was the trade the
+    // fixed budgets kept making.
+    if (currentChars >= m.comfortChars || count === floorCount) {
+      return { count, currentChars, ancestorChars };
+    }
+  }
+
+  // The loop always returns at floorCount; this only satisfies the compiler.
+  return { count: floorCount, currentChars: m.minChars, ancestorChars: m.minChars };
+}
+
 export function abbreviateCrumb(labelText: string, maxChars: number): string {
   const clean = labelText.trim().replace(/\s+/g, ' ');
   if (clean.length <= maxChars) return clean;

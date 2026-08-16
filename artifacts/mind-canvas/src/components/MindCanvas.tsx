@@ -22,7 +22,7 @@ import {
   ringRadius,
   bubbleScale,
   abbreviateCrumb,
-  CRUMB_LIMIT,
+  fitCrumbs,
   LABEL_MIN_PX,
   LABEL_MAX_PX,
   labelZoomOpacity,
@@ -1227,6 +1227,16 @@ export default function MindCanvas() {
   // only in the panel because "n" can close the panel from outside it, and
   // that route has to be able to ask before throwing the work away.
   const [notesDirty,     setNotesDirty]     = useState(false);
+  // The breadcrumb sizes itself against the window, so it has to know when the
+  // window changes. The existing resize effect re-fits the CAMERA and is
+  // debounced by 200ms for that reason; the bar wants the width immediately.
+  const [viewportWidth,  setViewportWidth]  = useState(
+    () => (typeof window !== 'undefined' ? window.innerWidth : 1280));
+  useEffect(() => {
+    const onResize = () => setViewportWidth(window.innerWidth);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
   const [saveFailedToast,  setSaveFailedToast]  = useState(false);
   const [storageNearLimit, setStorageNearLimit] = useState(false);
   // null  = not dismissed this session (banner shows when storageNearLimit is true)
@@ -2066,22 +2076,35 @@ export default function MindCanvas() {
   // to make it fit. At depth that fails in the worst possible way: the crumb
   // clipped off the end is the current bubble — the one piece of the trail that
   // says where you are — while the root, the least useful part, keeps its full
-  // width. So the trail is now windowed to the nearest few levels and each
-  // label is shortened at the source.
+  // width.
   //
-  // The current bubble gets the roomier budget because it is the one being
-  // read; ancestors only need to be recognisable.
-  const CRUMB_CHARS_ANCESTOR = 14;
-  const CRUMB_CHARS_CURRENT  = 22;
-
+  // So the bar measures the room it has and spends it: fitCrumbs decides how
+  // many levels are worth showing and how many characters each may have, the
+  // current bubble and its parent are never dropped, and every label is
+  // shortened at the source rather than clipped at the edge. Mobile runs the
+  // same function against its own screen.
   const fullTrail = focusedId
     ? [...ancestorsOf(focusedId).reverse(), focusedId].map(i => byId[i]?.label).filter(Boolean)
     : [];
-  const trailClipped = fullTrail.length > CRUMB_LIMIT;
-  const breadcrumb   = (trailClipped ? fullTrail.slice(-CRUMB_LIMIT) : fullTrail)
+  const crumbFit = fitCrumbs(fullTrail.length, {
+    // Matches the maxWidth backstop below: the bar is centred, so the 160px
+    // reserved either side keeps it clear of Settings and its mirror.
+    barWidth:     Math.max(240, viewportWidth - 320),
+    fixed:        32,   // padding '5px 16px' — the 16 either side
+    chevron:      14,   // the › glyph plus the 1.5 gaps around it
+    crumbPadding: 0,    // crumbs are plain spans here, spaced by the flex gap
+    currentExtra: 0,    // and carry no colour dot
+    ellipsis:     14,
+    charWidth:    6.2,  // 11.5px with .03em tracking, averaged over mixed case
+    minChars:     8,
+    maxChars:     26,
+    comfortChars: 20,
+  });
+  const trailClipped = fullTrail.length > crumbFit.count;
+  const breadcrumb   = fullTrail.slice(-crumbFit.count)
     .map((l, i, arr) => abbreviateCrumb(
       l as string,
-      i === arr.length - 1 ? CRUMB_CHARS_CURRENT : CRUMB_CHARS_ANCESTOR,
+      i === arr.length - 1 ? crumbFit.currentChars : crumbFit.ancestorChars,
     ));
 
   return (
@@ -2178,14 +2201,14 @@ export default function MindCanvas() {
           {/* Says there are levels above without pretending to name them. */}
           {trailClipped && (
             <span className="flex items-center gap-1.5">
-              <span title={fullTrail.slice(0, -CRUMB_LIMIT).join(' › ')}>…</span>
+              <span title={fullTrail.slice(0, -crumbFit.count).join(' › ')}>…</span>
             </span>
           )}
           {breadcrumb.map((l, i) => (
             <span key={i} className="flex items-center gap-1.5">
               {(i > 0 || trailClipped) && <span style={{ opacity: .4 }}>›</span>}
               {/* The untruncated name is one hover away. */}
-              <span title={fullTrail[trailClipped ? fullTrail.length - CRUMB_LIMIT + i : i]}
+              <span title={fullTrail[fullTrail.length - crumbFit.count + i]}
                 style={{ color: i === breadcrumb.length - 1 ? '#5b5b68' : undefined }}>{l}</span>
             </span>
           ))}

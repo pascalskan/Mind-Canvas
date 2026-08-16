@@ -27,6 +27,8 @@ import {
   CRUMB_LIMIT as MOBILE_CRUMB_LIMIT,
   labelZoomOpacity as mobileLabelOpacity,
   pillarLabelIsCompact as mobileCompact,
+  fitCrumbs as mobileFitCrumbs,
+  type CrumbMetrics,
   LABEL_FADE_FROM_PX as MOBILE_FADE_FROM,
   LABEL_FADE_TO_PX as MOBILE_FADE_TO,
 } from './bubbleLayout';
@@ -46,6 +48,7 @@ import {
   CRUMB_LIMIT as WEB_CRUMB_LIMIT,
   labelZoomOpacity as webLabelOpacity,
   pillarLabelIsCompact as webCompact,
+  fitCrumbs as webFitCrumbs,
   LABEL_FADE_FROM_PX as WEB_FADE_FROM,
   LABEL_FADE_TO_PX as WEB_FADE_TO,
 } from '../../mind-canvas/src/lib/bubbleLayout';
@@ -290,6 +293,100 @@ describe('the compact pillar label agrees across platforms', () => {
   it('never applies to a non-pillar, which fades out instead', () => {
     expect(mobileCompact(19, false)).toBe(false);
     expect(mobileCompact(0, false)).toBe(false);
+  });
+});
+
+// ─── Breadcrumb fitting ───────────────────────────────────────────────────────
+
+describe('the breadcrumb spends only the room it has', () => {
+  /** The mobile bar on a 393pt phone — the case that was overhanging. */
+  const PHONE: CrumbMetrics = {
+    barWidth: 393 - 64 - 12,
+    fixed: 24 + 22, chevron: 16, crumbPadding: 8, currentExtra: 13,
+    ellipsis: 22, charWidth: 7, minChars: 6, maxChars: 18, comfortChars: 15,
+  };
+  /** The web bar on a 1280px window. */
+  const DESKTOP: CrumbMetrics = {
+    barWidth: 1280 - 320,
+    fixed: 32, chevron: 14, crumbPadding: 0, currentExtra: 0,
+    ellipsis: 14, charWidth: 6.2, minChars: 8, maxChars: 26, comfortChars: 20,
+  };
+
+  /** What the bar will actually be, in the platform's units. */
+  function widthOf(count: number, fit: { currentChars: number; ancestorChars: number },
+                   total: number, m: CrumbMetrics): number {
+    const hidesOlder = total > count;
+    return m.fixed
+      + count * (m.chevron + m.crumbPadding)
+      + m.currentExtra
+      + (hidesOlder ? m.ellipsis + m.chevron : 0)
+      + (fit.currentChars + (count - 1) * fit.ancestorChars) * m.charWidth;
+  }
+
+  it.each([1, 2, 3, 4, 6, 10])('agrees across platforms at depth %i', (total) => {
+    expect(mobileFitCrumbs(total, PHONE)).toEqual(webFitCrumbs(total, PHONE));
+    expect(mobileFitCrumbs(total, DESKTOP)).toEqual(webFitCrumbs(total, DESKTOP));
+  });
+
+  // The point of the whole exercise: the bar must stop running off the screen.
+  it.each([1, 2, 3, 4, 6, 10])('stays inside the phone bar at depth %i', (total) => {
+    const fit = mobileFitCrumbs(total, PHONE);
+    expect(widthOf(fit.count, fit, total, PHONE)).toBeLessThanOrEqual(PHONE.barWidth);
+  });
+
+  it.each([1, 2, 3, 4, 6, 10])('stays inside the desktop bar at depth %i', (total) => {
+    const fit = mobileFitCrumbs(total, DESKTOP);
+    expect(widthOf(fit.count, fit, total, DESKTOP)).toBeLessThanOrEqual(DESKTOP.barWidth);
+  });
+
+  // The current bubble and its parent answer "where am I". Nothing may drop
+  // them, however cramped the bar gets.
+  it.each([320, 360, 393, 430, 600, 1280])('keeps parent and current at %ipx wide', (w) => {
+    const fit = mobileFitCrumbs(8, { ...PHONE, barWidth: w - 76 });
+    expect(fit.count).toBeGreaterThanOrEqual(2);
+  });
+
+  it('never shows more of the trail than exists', () => {
+    expect(mobileFitCrumbs(1, DESKTOP).count).toBe(1);
+    expect(mobileFitCrumbs(2, DESKTOP).count).toBe(2);
+    expect(mobileFitCrumbs(0, DESKTOP).count).toBe(0);
+  });
+
+  // A wider bar should never buy you LESS of the trail.
+  it('never shrinks the trail as the screen grows', () => {
+    let prev = 0;
+    for (const w of [200, 260, 320, 400, 500, 700, 960]) {
+      const fit = mobileFitCrumbs(10, { ...PHONE, barWidth: w });
+      expect(fit.count).toBeGreaterThanOrEqual(prev === 0 ? 0 : prev);
+      prev = fit.count;
+    }
+  });
+
+  // The double share only has to show when space is scarce. Given plenty, both
+  // reach the ceiling and nobody is shortchanged — which is the right outcome,
+  // not a failure of the priority.
+  it('favours the current bubble when room is tight', () => {
+    const tight = mobileFitCrumbs(6, { ...DESKTOP, barWidth: 300 });
+    expect(tight.currentChars).toBeGreaterThan(tight.ancestorChars);
+  });
+
+  it('lets both reach the ceiling when room is plentiful', () => {
+    const roomy = mobileFitCrumbs(6, { ...DESKTOP, barWidth: 1600 });
+    expect(roomy.ancestorChars).toBe(DESKTOP.maxChars);
+    expect(roomy.currentChars).toBe(DESKTOP.maxChars);
+  });
+
+  it('honours its own floor and ceiling on characters', () => {
+    for (const w of [120, 200, 300, 600, 4000]) {
+      const fit = mobileFitCrumbs(6, { ...DESKTOP, barWidth: w });
+      expect(fit.ancestorChars).toBeGreaterThanOrEqual(DESKTOP.minChars);
+      expect(fit.currentChars).toBeLessThanOrEqual(DESKTOP.maxChars);
+    }
+  });
+
+  // A desktop window has room for the full window of levels.
+  it('shows the full window on a desktop', () => {
+    expect(mobileFitCrumbs(10, DESKTOP).count).toBe(3);
   });
 });
 

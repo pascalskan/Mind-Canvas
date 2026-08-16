@@ -1,18 +1,24 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Platform, Pressable, StyleSheet, Text, TouchableOpacity, View,
+  useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useBubbles } from '@/context/BubbleContext';
 import CanvasView from '@/components/CanvasView';
-import { abbreviateCrumb, CRUMB_LIMIT } from '@/lib/bubbleLayout';
+import { abbreviateCrumb, fitCrumbs } from '@/lib/bubbleLayout';
 import AddBubblePanel from '@/components/AddBubblePanel';
 import EditBubblePanel from '@/components/EditBubblePanel';
 import SettingsPanel from '@/components/SettingsPanel';
 import NotesPanel from '@/components/NotesPanel';
 import SaveAvailablePrompt from '@/components/SaveAvailablePrompt';
+
+// The bar starts clear of the Settings button (44pt at left: 12) and stops
+// just short of the right edge, which holds nothing at the top.
+const BAR_INSET_LEFT  = 64;
+const BAR_INSET_RIGHT = 12;
 
 export default function MainScreen() {
   const {
@@ -23,6 +29,7 @@ export default function MainScreen() {
   } = useBubbles();
 
   const insets = useSafeAreaInsets();
+  const { width: screenWidth } = useWindowDimensions();
   const [showAdd, setShowAdd]           = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [addParentId, setAddParentId]   = useState<string | null>(null);
@@ -80,12 +87,23 @@ export default function MainScreen() {
   // visible crumb's parent so the user can still navigate up quickly.
   // Memoised so unrelated renders do not recompute or produce transient values.
 
-  // Full titles at depth pushed the bar across most of the screen. Windowing
-  // alone was not enough — three untouched labels still fill it — so each is
-  // abbreviated too, tightly for ancestors and less so for the bubble you are
-  // actually in. CRUMB_LIMIT and abbreviateCrumb are shared with the web app.
-  const CRUMB_CHARS_ANCESTOR = 9;
-  const CRUMB_CHARS_CURRENT  = 15;
+  // How much of the trail fits is a question about THIS screen, so it is
+  // measured rather than assumed. Fixed budgets were the previous attempt and
+  // they still overhung: a number that suits one phone overflows a narrower
+  // one. See fitCrumbs — the current bubble and its parent are never dropped,
+  // and older levels appear only when they genuinely fit.
+  const crumbFit = useMemo(() => (total: number) => fitCrumbs(total, {
+    barWidth: screenWidth - BAR_INSET_LEFT - BAR_INSET_RIGHT,
+    fixed:        24 + 22,   // bar paddingHorizontal ×2, then the Home button
+    chevron:      16,        // glyph plus its margins
+    crumbPadding: 8,         // crumbBtn paddingHorizontal ×2
+    currentExtra: 13,        // the current crumb's colour dot, plus its gap
+    ellipsis:     22,
+    charWidth:    7,         // Inter 13px, averaged over mixed case
+    minChars:     6,
+    maxChars:     18,
+    comfortChars: 15,        // enough for a two-word title like "Define Proposal"
+  }), [screenWidth]);
 
   const { breadcrumb, hasEllipsis, ellipsisTargetId } = useMemo(() => {
     const full: { id: string; label: string; color: string }[] = [];
@@ -96,16 +114,19 @@ export default function MainScreen() {
         cur = cur.parentId ? byId[cur.parentId] : undefined as any;
       }
     }
-    const ellipsis = full.length > CRUMB_LIMIT;
-    const windowed = ellipsis ? full.slice(-CRUMB_LIMIT) : full;
+    const fit      = crumbFit(full.length);
+    const ellipsis = full.length > fit.count;
+    const windowed = full.slice(-fit.count);
     const visible  = windowed.map((c, i) => ({
       ...c,
-      short: abbreviateCrumb(c.label, i === windowed.length - 1 ? CRUMB_CHARS_CURRENT : CRUMB_CHARS_ANCESTOR),
+      short: abbreviateCrumb(c.label, i === windowed.length - 1 ? fit.currentChars : fit.ancestorChars),
     }));
     // Parent of the oldest visible crumb — where "…" should navigate to.
-    const targetId = ellipsis ? (byId[visible[0]!.id]?.parentId ?? null) : null;
+    const targetId = ellipsis && visible.length > 0
+      ? (byId[visible[0]!.id]?.parentId ?? null)
+      : null;
     return { breadcrumb: visible, hasEllipsis: ellipsis, ellipsisTargetId: targetId };
-  }, [focusedId, byId]);
+  }, [focusedId, byId, crumbFit]);
 
   // ── Edit handlers ──────────────────────────────────────────────────────────
 
@@ -202,7 +223,7 @@ export default function MainScreen() {
                 <Feather name="chevron-right" size={12} color="#d1d5db" style={styles.chevron} />
                 <TouchableOpacity
                   onPress={() => { setFocusedId(crumb.id); Haptics.selectionAsync(); }}
-                  style={styles.crumbBtn}
+                  style={[styles.crumbBtn, i === breadcrumb.length - 1 && styles.crumbBtnCurrent]}
                 >
                   {/* The dot is kept only for the bubble you are in. On three
                       crumbs the ancestor dots cost more width than the colour
@@ -213,6 +234,7 @@ export default function MainScreen() {
                   <Text
                     style={[styles.crumbText, i === breadcrumb.length - 1 && styles.crumbTextActive]}
                     numberOfLines={1}
+                    ellipsizeMode="tail"
                   >
                     {crumb.short}
                   </Text>
@@ -385,14 +407,13 @@ export default function MainScreen() {
 
 const styles = StyleSheet.create({
   breadcrumb: {
-    position: 'absolute', left: 0, right: 0,
+    // Anchored between the Settings button and the right edge rather than
+    // centred across the whole screen. Centring meant reserving a matching
+    // 64pt on the right for a corner that holds nothing, which cost the bar a
+    // fifth of its usable width on a phone. The bar still centres itself
+    // WITHIN this region, so a short trail sits balanced against the button.
+    position: 'absolute', left: BAR_INSET_LEFT, right: BAR_INSET_RIGHT,
     alignItems: 'center', zIndex: 50,
-    // Keep the bar clear of the Settings button (44pt wide at left: 12) and of
-    // the symmetric space on the right. Without this the centred bar — up to
-    // 90% of the screen — ran underneath the button on narrow devices, so a tap
-    // meant for the first crumb opened Settings instead. Settings still wins on
-    // zIndex, which is what made the collision silent rather than visible.
-    paddingHorizontal: 64,
   },
   breadcrumbInner: {
     flexDirection: 'row', alignItems: 'center',
@@ -406,14 +427,20 @@ const styles = StyleSheet.create({
   crumbBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 5,
     paddingHorizontal: 4, height: 36, justifyContent: 'center',
+    // THIS is what let the bar overhang the screen. maxWidth on the container
+    // cannot shrink children that refuse to shrink, so the row kept its
+    // intrinsic width and simply ran off the edge. Ancestors give way three
+    // times as readily as the bubble you are in, so the name you are reading
+    // is the last thing to be truncated.
+    flexShrink: 3, minWidth: 0,
   },
+  crumbBtnCurrent: { flexShrink: 1 },
   crumbDot: { width: 8, height: 8, borderRadius: 4 },
   crumbText: {
-    // maxWidth is a backstop only — abbreviateCrumb is what keeps the bar
-    // narrow. Left in so a pathological single-word label cannot still push
-    // the bar out to the screen edges.
+    // No maxWidth: the character budget comes from fitCrumbs now, and
+    // flexShrink above handles anything that estimate gets wrong.
     fontSize: 13, fontFamily: 'Inter_400Regular',
-    color: '#9ca3af', maxWidth: 96,
+    color: '#9ca3af', flexShrink: 1,
   },
   crumbEllipsis: {
     fontSize: 14, fontFamily: 'Inter_400Regular',
