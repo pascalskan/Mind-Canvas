@@ -20,7 +20,12 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
 // Mobile
-import { canvasSignature as mobileSignature, buildInitialBubbles } from './bubbleLayout';
+import {
+  canvasSignature as mobileSignature,
+  buildInitialBubbles,
+  abbreviateCrumb as mobileAbbreviate,
+  CRUMB_LIMIT as MOBILE_CRUMB_LIMIT,
+} from './bubbleLayout';
 import { parseBubbleJson, pushToCloud, fetchFromCloud } from './persistence';
 import { STORAGE_VERSION, type BubbleData } from './bubbleTypes';
 
@@ -31,6 +36,11 @@ import {
   isValidBubbleGraph as webIsValidGraph,
   STORAGE_VERSION as WEB_STORAGE_VERSION,
 } from '../../mind-canvas/src/persistence';
+
+import {
+  abbreviateCrumb as webAbbreviate,
+  CRUMB_LIMIT as WEB_CRUMB_LIMIT,
+} from '../../mind-canvas/src/lib/bubbleLayout';
 
 // Server
 import { validateMapPayload } from '../../api-server/src/lib/mapPayload';
@@ -211,6 +221,66 @@ describe('the three validators accept and reject the same maps', () => {
   ])('all three reject %s', (_label, bubbles) => {
     const v = verdicts(bubbles as unknown[]);
     expect(v).toEqual({ mobile: false, web: false, server: false });
+  });
+});
+
+// ─── Breadcrumb labels ────────────────────────────────────────────────────────
+
+describe('breadcrumb abbreviation agrees across platforms', () => {
+  // Both platforms shorten crumbs so a deep trail cannot push the bar across
+  // the canvas. The budgets differ by screen, but the rule that produces the
+  // text must not — the same canvas should read the same way on both.
+  const CASES: [string, number][] = [
+    ['Personal', 9],
+    ['Personal', 15],
+    ['Music Commercials', 9],
+    ['Music Commercials', 15],
+    ['Music Commercials', 22],
+    ['Cold Call January Push', 9],
+    ['Cold Call January Push', 15],
+    ['Supercalifragilisticexpialidocious', 9],
+    ['  spaced   out   words  ', 14],
+    ['', 9],
+    ['A', 9],
+  ];
+
+  it.each(CASES)('matches for %j at %i chars', (labelText, maxChars) => {
+    expect(mobileAbbreviate(labelText, maxChars)).toBe(webAbbreviate(labelText, maxChars));
+  });
+
+  it('uses the same crumb limit on both platforms', () => {
+    expect(MOBILE_CRUMB_LIMIT).toBe(WEB_CRUMB_LIMIT);
+  });
+
+  it.each(CASES)('never exceeds its budget for %j at %i chars', (labelText, maxChars) => {
+    const out = mobileAbbreviate(labelText, maxChars);
+    // The ellipsis is the one character allowed past the budget.
+    expect(out.replace(/…$/, '').length).toBeLessThanOrEqual(maxChars);
+  });
+
+  it('leaves a label that already fits completely alone', () => {
+    expect(mobileAbbreviate('Personal', 15)).toBe('Personal');
+    expect(mobileAbbreviate('Personal', 8)).toBe('Personal');
+  });
+
+  it('keeps whole words rather than cutting mid-word', () => {
+    // "Cold Call" is exactly 9, so it survives whole; the cut lands on a space
+    // either way rather than part-way through a word.
+    expect(mobileAbbreviate('Cold Call January Push', 9)).toBe('Cold Call…');
+    expect(mobileAbbreviate('Cold Call January Push', 8)).toBe('Cold…');
+  });
+
+  it('leaves it alone when the whole label fits, however many words', () => {
+    expect(mobileAbbreviate('one two three', 13)).toBe('one two three');
+  });
+
+  it('stops at two words even when a third would fit the budget', () => {
+    // "a b c" (5) would fit in 6, but a third word buys little for its width.
+    expect(mobileAbbreviate('a b c ddddddddddd', 6)).toBe('a b…');
+  });
+
+  it('cuts inside a word only when one word is wider than the budget', () => {
+    expect(mobileAbbreviate('Supercalifragilistic', 9)).toBe('Supercali…');
   });
 });
 

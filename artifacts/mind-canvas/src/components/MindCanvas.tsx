@@ -21,6 +21,8 @@ import {
   getSize,
   ringRadius,
   bubbleScale,
+  abbreviateCrumb,
+  CRUMB_LIMIT,
 } from '../lib/bubbleLayout';
 import { applyRootDrag, applyChildDrag, shouldWriteBubbleMotionValues, isBackgroundTap, descendantsOf as descendantsOfPure } from '../lib/dragHelpers';
 import SettingsPanel from './SettingsPanel';
@@ -2048,9 +2050,29 @@ export default function MindCanvas() {
     fontSize: 14,
   };
 
-  const breadcrumb = focusedId
+  // ── Breadcrumb ───────────────────────────────────────────────────────────
+  //
+  // This used to render the WHOLE ancestor chain and lean on `overflow: hidden`
+  // to make it fit. At depth that fails in the worst possible way: the crumb
+  // clipped off the end is the current bubble — the one piece of the trail that
+  // says where you are — while the root, the least useful part, keeps its full
+  // width. So the trail is now windowed to the nearest few levels and each
+  // label is shortened at the source.
+  //
+  // The current bubble gets the roomier budget because it is the one being
+  // read; ancestors only need to be recognisable.
+  const CRUMB_CHARS_ANCESTOR = 14;
+  const CRUMB_CHARS_CURRENT  = 22;
+
+  const fullTrail = focusedId
     ? [...ancestorsOf(focusedId).reverse(), focusedId].map(i => byId[i]?.label).filter(Boolean)
     : [];
+  const trailClipped = fullTrail.length > CRUMB_LIMIT;
+  const breadcrumb   = (trailClipped ? fullTrail.slice(-CRUMB_LIMIT) : fullTrail)
+    .map((l, i, arr) => abbreviateCrumb(
+      l as string,
+      i === arr.length - 1 ? CRUMB_CHARS_CURRENT : CRUMB_CHARS_ANCESTOR,
+    ));
 
   return (
     <div ref={containerRef} className="w-screen h-screen overflow-hidden touch-none relative"
@@ -2137,11 +2159,24 @@ export default function MindCanvas() {
           // button at top-left (and its mirror on the right). Settings sits on
           // a higher z-index, so the collision was invisible: the crumb was
           // simply unclickable in that strip.
-          style={{ background: 'rgba(255,255,255,.7)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 20, padding: '5px 16px', boxShadow: '0 2px 14px rgba(0,0,0,.05)', fontSize: 11.5, color: '#8b8b96', fontWeight: 300, letterSpacing: '.03em', maxWidth: 'calc(100vw - 320px)', overflow: 'hidden' }}>
+          // maxWidth remains as a backstop only. With the trail windowed and
+          // every label abbreviated it should never be what keeps the bar in
+          // bounds — but a pathological label should still not reach under the
+          // Settings button, which sits on a higher z-index and would silently
+          // take the clicks.
+          style={{ background: 'rgba(255,255,255,.7)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderRadius: 20, padding: '5px 16px', boxShadow: '0 2px 14px rgba(0,0,0,.05)', fontSize: 11.5, color: '#8b8b96', fontWeight: 300, letterSpacing: '.03em', maxWidth: 'calc(100vw - 320px)', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+          {/* Says there are levels above without pretending to name them. */}
+          {trailClipped && (
+            <span className="flex items-center gap-1.5">
+              <span title={fullTrail.slice(0, -CRUMB_LIMIT).join(' › ')}>…</span>
+            </span>
+          )}
           {breadcrumb.map((l, i) => (
             <span key={i} className="flex items-center gap-1.5">
-              {i > 0 && <span style={{ opacity: .4 }}>›</span>}
-              <span style={{ color: i === breadcrumb.length - 1 ? '#5b5b68' : undefined }}>{l}</span>
+              {(i > 0 || trailClipped) && <span style={{ opacity: .4 }}>›</span>}
+              {/* The untruncated name is one hover away. */}
+              <span title={fullTrail[trailClipped ? fullTrail.length - CRUMB_LIMIT + i : i]}
+                style={{ color: i === breadcrumb.length - 1 ? '#5b5b68' : undefined }}>{l}</span>
             </span>
           ))}
         </motion.div>

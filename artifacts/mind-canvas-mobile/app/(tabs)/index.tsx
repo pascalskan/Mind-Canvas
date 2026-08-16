@@ -7,6 +7,7 @@ import { Feather } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useBubbles } from '@/context/BubbleContext';
 import CanvasView from '@/components/CanvasView';
+import { abbreviateCrumb, CRUMB_LIMIT } from '@/lib/bubbleLayout';
 import AddBubblePanel from '@/components/AddBubblePanel';
 import EditBubblePanel from '@/components/EditBubblePanel';
 import SettingsPanel from '@/components/SettingsPanel';
@@ -79,7 +80,12 @@ export default function MainScreen() {
   // visible crumb's parent so the user can still navigate up quickly.
   // Memoised so unrelated renders do not recompute or produce transient values.
 
-  const CRUMB_LIMIT = 3;
+  // Full titles at depth pushed the bar across most of the screen. Windowing
+  // alone was not enough — three untouched labels still fill it — so each is
+  // abbreviated too, tightly for ancestors and less so for the bubble you are
+  // actually in. CRUMB_LIMIT and abbreviateCrumb are shared with the web app.
+  const CRUMB_CHARS_ANCESTOR = 9;
+  const CRUMB_CHARS_CURRENT  = 15;
 
   const { breadcrumb, hasEllipsis, ellipsisTargetId } = useMemo(() => {
     const full: { id: string; label: string; color: string }[] = [];
@@ -91,9 +97,13 @@ export default function MainScreen() {
       }
     }
     const ellipsis = full.length > CRUMB_LIMIT;
-    const visible  = ellipsis ? full.slice(-CRUMB_LIMIT) : full;
+    const windowed = ellipsis ? full.slice(-CRUMB_LIMIT) : full;
+    const visible  = windowed.map((c, i) => ({
+      ...c,
+      short: abbreviateCrumb(c.label, i === windowed.length - 1 ? CRUMB_CHARS_CURRENT : CRUMB_CHARS_ANCESTOR),
+    }));
     // Parent of the oldest visible crumb — where "…" should navigate to.
-    const targetId = ellipsis ? (byId[visible[0].id]?.parentId ?? null) : null;
+    const targetId = ellipsis ? (byId[visible[0]!.id]?.parentId ?? null) : null;
     return { breadcrumb: visible, hasEllipsis: ellipsis, ellipsisTargetId: targetId };
   }, [focusedId, byId]);
 
@@ -194,12 +204,17 @@ export default function MainScreen() {
                   onPress={() => { setFocusedId(crumb.id); Haptics.selectionAsync(); }}
                   style={styles.crumbBtn}
                 >
-                  <View style={[styles.crumbDot, { backgroundColor: crumb.color }]} />
+                  {/* The dot is kept only for the bubble you are in. On three
+                      crumbs the ancestor dots cost more width than the colour
+                      cue is worth, and the trail is what needed the room. */}
+                  {i === breadcrumb.length - 1 && (
+                    <View style={[styles.crumbDot, { backgroundColor: crumb.color }]} />
+                  )}
                   <Text
                     style={[styles.crumbText, i === breadcrumb.length - 1 && styles.crumbTextActive]}
                     numberOfLines={1}
                   >
-                    {crumb.label}
+                    {crumb.short}
                   </Text>
                 </TouchableOpacity>
               </React.Fragment>
@@ -260,16 +275,16 @@ export default function MainScreen() {
         </View>
       )}
 
-      {/* ── Bottom-left cluster: hide text, then notes ───────────────────
-          Sits on the toolbar's baseline, opposite the centred pills, and hides
-          alongside them whenever a sheet slides up into that space. Not shown
-          in edit mode: editing is about the words. */}
+      {/* ── Corner controls, one per side ─────────────────────────────────
+          Both sat at bottom-left originally, which put the second of them
+          directly under the centred Edit pill on a normal phone — visible but
+          only half tappable. One per corner is the only arrangement the
+          centred toolbar cannot grow into. Both sit on the toolbar's baseline
+          and hide alongside it whenever a sheet slides up into that space, and
+          neither shows in edit mode: editing is about the words. */}
       {!showAdd && !showSettings && !showNotes && !editMode && (
-        <View style={[styles.cornerWrap, { bottom: bottomInset + 16 }]} pointerEvents="box-none">
-          {notesHint && (
-            <Text style={styles.cornerHint}>Open a bubble to add notes</Text>
-          )}
-          <View style={styles.cornerRow} pointerEvents="auto">
+        <>
+          <View style={[styles.cornerLeft, { bottom: bottomInset + 16 }]} pointerEvents="box-none">
             <TouchableOpacity
               style={[styles.iconBtn, textHidden && styles.iconBtnActive]}
               onPress={() => { setTextHidden(v => !v); Haptics.selectionAsync(); }}
@@ -278,7 +293,12 @@ export default function MainScreen() {
             >
               <Feather name="type" size={18} color={textHidden ? '#fff' : '#6b7280'} />
             </TouchableOpacity>
+          </View>
 
+          <View style={[styles.cornerRight, { bottom: bottomInset + 16 }]} pointerEvents="box-none">
+            {notesHint && (
+              <Text style={styles.cornerHint}>Open a bubble to add notes</Text>
+            )}
             <TouchableOpacity
               style={[styles.iconBtn, !focusedId && styles.iconBtnMuted]}
               onPress={() => {
@@ -302,7 +322,7 @@ export default function MainScreen() {
               )}
             </TouchableOpacity>
           </View>
-        </View>
+        </>
       )}
 
       {/* ── Cloud save-failed toast ─────────────────────────────────────────
@@ -389,8 +409,11 @@ const styles = StyleSheet.create({
   },
   crumbDot: { width: 8, height: 8, borderRadius: 4 },
   crumbText: {
+    // maxWidth is a backstop only — abbreviateCrumb is what keeps the bar
+    // narrow. Left in so a pathological single-word label cannot still push
+    // the bar out to the screen edges.
     fontSize: 13, fontFamily: 'Inter_400Regular',
-    color: '#9ca3af', maxWidth: 100,
+    color: '#9ca3af', maxWidth: 96,
   },
   crumbEllipsis: {
     fontSize: 14, fontFamily: 'Inter_400Regular',
@@ -409,13 +432,15 @@ const styles = StyleSheet.create({
     position: 'absolute', left: 12, zIndex: 55,
   },
   // Below the toolbar (zIndex 50) on purpose. On a phone narrow enough for the
-  // centred pills to reach this corner, the pills draw over these buttons and
-  // take the taps in the overlap — so what you can see is always what you hit,
-  // and the more important control wins.
-  cornerWrap: {
+  // centred pills to reach a corner, the pills draw over the button and take
+  // the taps in the overlap — so what you can see is always what you hit, and
+  // the more important control wins.
+  cornerLeft: {
     position: 'absolute', left: 12, zIndex: 45, alignItems: 'flex-start',
   },
-  cornerRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  cornerRight: {
+    position: 'absolute', right: 12, zIndex: 45, alignItems: 'flex-end',
+  },
   cornerHint: {
     fontSize: 11, fontFamily: 'Inter_400Regular', color: '#6b7280',
     backgroundColor: 'rgba(255,255,255,0.94)',

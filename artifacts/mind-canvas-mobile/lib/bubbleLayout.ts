@@ -411,6 +411,48 @@ export function canvasSignature(bubbles: BubbleData[], name?: string): string {
   return `${name ?? ''}::${parts.join('|')}`;
 }
 
+
+// ── Breadcrumb labels ─────────────────────────────────────────────────────────
+
+/**
+ * How many levels the breadcrumb shows before collapsing the rest behind "…".
+ * The trail answers "where am I", and the nearest few ancestors answer it; the
+ * whole chain from the root just turns the bar into a second canvas.
+ */
+export const CRUMB_LIMIT = 3;
+
+/**
+ * Shortens one bubble label for the breadcrumb.
+ *
+ * A deep chain of full titles is what pushes the bar across the canvas. Letting
+ * the container clip it instead is worse than it sounds: the crumb that gets
+ * cut is the LAST one, which is the only one saying where you actually are. So
+ * each crumb is shortened at the source, and the bar stays inside its bounds by
+ * construction rather than by overflow.
+ *
+ * Whole words are kept wherever they fit — a word cut mid-way reads as a typo
+ * rather than an abbreviation — and at most two of them, since a third rarely
+ * adds recognition for its width. A single word longer than the budget still
+ * has to be cut somewhere, and that is the one case where letters are dropped.
+ *
+ * Duplicated on web and mobile like the rest of this file; syncContract.test.ts
+ * asserts the two copies agree.
+ */
+export function abbreviateCrumb(labelText: string, maxChars: number): string {
+  const clean = labelText.trim().replace(/\s+/g, ' ');
+  if (clean.length <= maxChars) return clean;
+
+  let out = '';
+  for (const word of clean.split(' ').slice(0, 2)) {
+    const next = out ? `${out} ${word}` : word;
+    if (next.length > maxChars) break;
+    out = next;
+  }
+  // Nothing fit: a first word wider than the whole budget.
+  if (!out) out = clean.slice(0, Math.max(1, maxChars));
+  return `${out}…`;
+}
+
 // ── Subtree helper ────────────────────────────────────────────────────────────
 
 /** Returns IDs of every descendant of `id` (direct + deep). */
