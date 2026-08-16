@@ -2,6 +2,21 @@
 // This interface is intentionally compatible with the web app's BubbleData so
 // that exported JSON files can be imported on either platform.
 
+/**
+ * One note attached to one bubble.
+ *
+ * Notes belong to the bubble that holds them and to nothing else — they are
+ * never inherited by a parent and never seen by a child. The panel only ever
+ * shows the notes of the bubble currently focused, which is what makes a note
+ * a property of a place on the canvas rather than of the whole map.
+ */
+export interface BubbleNote {
+  id:        string;
+  text:      string;
+  /** Epoch ms. Ordering and the "added ..." line; never used for sync. */
+  createdAt: number;
+}
+
 export interface BubbleData {
   id:       string;
   parentId?: string;
@@ -13,6 +28,8 @@ export interface BubbleData {
   angle?:   number;
   radial?:  number;
   scale?:   number;
+  /** Absent and empty mean the same thing; absent is what gets written. */
+  notes?:   BubbleNote[];
 }
 
 /** Which client wrote a save — used only for prompt wording. */

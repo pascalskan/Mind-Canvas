@@ -4,7 +4,7 @@ import React, {
 import { Alert, Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
-import { BubbleData, MAX_DEPTH, type SaveMeta } from '@/lib/bubbleTypes';
+import { BubbleData, MAX_DEPTH, type BubbleNote, type SaveMeta } from '@/lib/bubbleTypes';
 import {
   buildInitialBubbles, ringRadius, sizeForDepth, getSize, bubbleScale, ROOT_COLORS, PILLAR_COLORS,
   resolveCollisions, relativeLayer, syncPositionsFromAngleRadial, canvasSignature,
@@ -88,6 +88,23 @@ interface BubbleContextValue {
   renameBubble:         (id: string, label: string) => void;
   recolorBubble:        (id: string, color: string) => void;
   resizeBubble:         (id: string, scale: number) => void;
+
+  /**
+   * Notes belong to ONE bubble, so this takes the bubble id explicitly rather
+   * than reading the focused bubble from context — focus can change under an
+   * open sheet, and a note must never land on a different bubble than the one
+   * the sheet was opened for.
+   */
+  /**
+   * Replaces a bubble's notes wholesale.
+   *
+   * One call rather than add/update/delete, because the notes panel edits a
+   * DRAFT and only commits when the user presses Save. Granular mutations would
+   * have written every keystroke-level change straight onto the canvas, which
+   * is precisely the "changes you never agreed to" problem the Save button
+   * exists to prevent. Passing an empty array clears the notes entirely.
+   */
+  setBubbleNotes: (bubbleId: string, notes: BubbleNote[]) => void;
   updateBubblePosition: (id: string, pos: { x: number; y: number; angle?: number; radial?: number }) => void;
   /** Atomically update positions for many bubbles in a single render. */
   batchUpdatePositions: (updates: { id: string; x: number; y: number; angle?: number; radial?: number }[]) => void;
@@ -580,6 +597,23 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
     setBubbles(prev => prev.map(b => b.id === id ? { ...b, color } : b));
   }, []);
 
+  // ── Notes ─────────────────────────────────────────────────────────────────
+  // The sheet edits a draft and calls this once, on Save. Nothing reaches the
+  // canvas until then.
+
+  const setBubbleNotes = useCallback((bubbleId: string, notes: BubbleNote[]) => {
+    setBubbles(prev => prev.map(b => {
+      if (b.id !== bubbleId) return b;
+      // Drop the key entirely when there is nothing left, so a bubble that
+      // never had notes and one whose last note was removed serialise
+      // identically — an empty array left behind would read as a change on
+      // every future signature comparison and keep the unsaved dot lit over
+      // nothing.
+      const { notes: _dropped, ...rest } = b;
+      return notes.length > 0 ? { ...rest, notes } : rest;
+    }));
+  }, []);
+
   const resizeBubble = useCallback((id: string, scale: number) => {
 
     // Matches web's resizeBubble clamp. Values only ever come from
@@ -717,6 +751,7 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
     pendingSave, acceptPendingSave, dismissPendingSave,
     setFocusedId, setEditSelection, enterEditMode, cancelEditMode, saveEditMode,
     addBubble, deleteBubble, renameBubble, recolorBubble, resizeBubble,
+    setBubbleNotes,
     updateBubblePosition, batchUpdatePositions, resyncPositions, noteInteraction,
     exportMap, importMap, clearCanvas,
   }), [
@@ -725,6 +760,7 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
     pendingSave, acceptPendingSave, dismissPendingSave,
     enterEditMode, cancelEditMode, saveEditMode,
     addBubble, deleteBubble, renameBubble, recolorBubble, resizeBubble,
+    setBubbleNotes,
     updateBubblePosition, batchUpdatePositions, resyncPositions, noteInteraction,
     exportMap, importMap, clearCanvas,
   ]);

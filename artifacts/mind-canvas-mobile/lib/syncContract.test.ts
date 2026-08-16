@@ -41,6 +41,25 @@ const SAMPLE: BubbleData[] = [
   { id: 'b2', label: 'Pip',   x: 130, y: 44,  color: '#c3b3d3', depth: 2, parentId: 'b1', scale: 1.2 },
 ];
 
+/**
+ * The same map with notes on it. The text deliberately contains `~` and `|` —
+ * the delimiters canvasSignature joins its other fields with. Real notes are
+ * long free-form writing and will eventually contain both, and a signature
+ * that let them collide would report "no unsaved changes" over work that was
+ * never published.
+ */
+const SAMPLE_WITH_NOTES: BubbleData[] = [
+  SAMPLE[0]!,
+  {
+    ...SAMPLE[1]!,
+    notes: [
+      { id: 'n1', text: 'ship by friday',        createdAt: 1_700_000_000_000 },
+      { id: 'n2', text: 'edge case: a~b|c d',    createdAt: 1_700_000_050_000 },
+    ],
+  },
+  SAMPLE[2]!,
+];
+
 beforeEach(() => {
   process.env['EXPO_PUBLIC_API_URL'] = 'http://localhost:8080';
 });
@@ -71,6 +90,8 @@ describe('canvasSignature agrees byte-for-byte across platforms', () => {
     ['a named map',                SAMPLE, 'Product strategy'],
     ['the seeded starter map',     buildInitialBubbles(), undefined],
     ['a single root',              [SAMPLE[0]], 'Solo'],
+    ['a map carrying notes',       SAMPLE_WITH_NOTES, undefined],
+    ['a named map with notes',     SAMPLE_WITH_NOTES, 'Annotated'],
   ])('matches for %s', (_label, bubbles, name) => {
     expect(mobileSignature(bubbles as BubbleData[], name))
       .toBe(webSignature(bubbles as never, name));
@@ -80,6 +101,34 @@ describe('canvasSignature agrees byte-for-byte across platforms', () => {
     const reversed = [...SAMPLE].reverse();
     expect(mobileSignature(reversed)).toBe(webSignature(reversed as never));
     expect(mobileSignature(reversed)).toBe(mobileSignature(SAMPLE));
+  });
+
+  // Notes ride inside the same payload as the map, so an edit to one is an
+  // unsaved change like any other. If the fingerprint ignored them, writing a
+  // note would leave the unsaved dot dark and the note would never be pushed.
+  it.each([
+    ['adding the first note', SAMPLE, SAMPLE_WITH_NOTES],
+    ['editing a note', SAMPLE_WITH_NOTES, SAMPLE_WITH_NOTES.map(b =>
+      b.id === 'b1' ? { ...b, notes: [{ ...b.notes![0]!, text: 'ship by monday' }, b.notes![1]!] } : b)],
+    ['deleting a note', SAMPLE_WITH_NOTES, SAMPLE_WITH_NOTES.map(b =>
+      b.id === 'b1' ? { ...b, notes: [b.notes![0]!] } : b)],
+  ])('both platforms see %s as a change', (_label, before, after) => {
+    expect(mobileSignature(after)).not.toBe(mobileSignature(before));
+    expect(webSignature(after as never)).not.toBe(webSignature(before as never));
+    // and the two platforms still agree on what the changed map hashes to
+    expect(mobileSignature(after)).toBe(webSignature(after as never));
+  });
+
+  // A bubble that never had notes and one whose last note was deleted must
+  // hash identically, or removing the final note would leave the canvas
+  // permanently "unsaved" against a save that already contains it.
+  it('an absent notes array and a removed one hash the same', () => {
+    const stripped = SAMPLE_WITH_NOTES.map(b => {
+      const { notes: _drop, ...rest } = b;
+      return rest as BubbleData;
+    });
+    expect(mobileSignature(stripped)).toBe(mobileSignature(SAMPLE));
+    expect(webSignature(stripped as never)).toBe(webSignature(SAMPLE as never));
   });
 
   it('both platforms register the same edits as changes', () => {
@@ -117,6 +166,26 @@ describe('the three validators accept and reject the same maps', () => {
     expect(v).toEqual({ mobile: true, web: true, server: true });
   });
 
+  it('all three accept a map carrying notes', () => {
+    const v = verdicts(SAMPLE_WITH_NOTES);
+    expect(v).toEqual({ mobile: true, web: true, server: true });
+  });
+
+  it('all three accept an empty notes array', () => {
+    const v = verdicts([{ ...SAMPLE[0], notes: [] }]);
+    expect(v).toEqual({ mobile: true, web: true, server: true });
+  });
+
+  // The server must not quietly drop notes on the way through: it rebuilds the
+  // top-level payload, and if bubbles were rebuilt field-by-field too, every
+  // note would vanish on the first save with nothing reported as wrong.
+  it('the server stores notes rather than stripping them', () => {
+    const result = validateMapPayload({ version: STORAGE_VERSION, bubbles: SAMPLE_WITH_NOTES });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.bubbles[1]!.notes).toEqual(SAMPLE_WITH_NOTES[1]!.notes);
+  });
+
   it.each([
     ['an empty map',              []],
     ['a missing required field',  [{ id: 'x', label: 'no coords' }]],
@@ -130,6 +199,15 @@ describe('the three validators accept and reject the same maps', () => {
       { ...SAMPLE[0], id: 'a', parentId: 'b' },
       { ...SAMPLE[0], id: 'b', parentId: 'a' },
     ]],
+    // One malformed note would otherwise make every device reject the WHOLE
+    // map and fall back to its own local draft, with nothing to explain why.
+    ['notes that are not an array', [{ ...SAMPLE[0], notes: 'a note' }]],
+    ['a note that is not an object', [{ ...SAMPLE[0], notes: ['a note'] }]],
+    ['a note with no id',           [{ ...SAMPLE[0], notes: [{ text: 'x', createdAt: 1 }] }]],
+    ['a note with an empty id',     [{ ...SAMPLE[0], notes: [{ id: '', text: 'x', createdAt: 1 }] }]],
+    ['a note with no text',         [{ ...SAMPLE[0], notes: [{ id: 'n', createdAt: 1 }] }]],
+    ['a note with numeric text',    [{ ...SAMPLE[0], notes: [{ id: 'n', text: 5, createdAt: 1 }] }]],
+    ['a note with a null createdAt',[{ ...SAMPLE[0], notes: [{ id: 'n', text: 'x', createdAt: null }] }]],
   ])('all three reject %s', (_label, bubbles) => {
     const v = verdicts(bubbles as unknown[]);
     expect(v).toEqual({ mobile: false, web: false, server: false });

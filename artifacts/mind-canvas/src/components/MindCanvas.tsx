@@ -7,6 +7,7 @@ import {
   STORAGE_QUOTA_BYTES,
   STORAGE_WARN_RATIO,
   type BubbleData,
+  type BubbleNote,
 } from '../persistence';
 import {
   MAX_DEPTH,
@@ -24,6 +25,7 @@ import {
 import { applyRootDrag, applyChildDrag, shouldWriteBubbleMotionValues, isBackgroundTap, descendantsOf as descendantsOfPure } from '../lib/dragHelpers';
 import SettingsPanel from './SettingsPanel';
 import SaveAvailablePrompt from './SaveAvailablePrompt';
+import NotesPanel, { DISCARD_PROMPT } from './NotesPanel';
 import { useBubbleState } from '../hooks/useBubbleState';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -578,6 +580,21 @@ function fitLayout(
 // scale) — unreadably small zoomed out, absurdly large zoomed in. These bounds
 // clamp the RENDERED size instead: text still scales with the canvas through
 // the comfortable middle, but stops shrinking and stops growing at the edges.
+/**
+ * Is this event coming from somewhere the user is writing?
+ *
+ * Both bare-key shortcuts on this canvas (hold-Tab, and "n" for notes) are
+ * single keystrokes with no modifier, which is exactly what a text field needs
+ * for itself. Every one of them has to defer here first, or typing "n" into a
+ * label opens the notes panel and typing Tab walks the focus ring.
+ */
+function isTypingTarget(t: EventTarget | null): boolean {
+  const el = t as HTMLElement | null;
+  if (!el || typeof el.tagName !== 'string') return false;
+  const tag = el.tagName.toLowerCase();
+  return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable === true;
+}
+
 const LABEL_MIN_PX = 11;
 const LABEL_MAX_PX = 22;
 // Clamping alone would leave every distant bubble carrying a full-size label,
@@ -1190,6 +1207,14 @@ export default function MindCanvas() {
   // Hold Tab: every label leaves the canvas so it can be read as pure shape,
   // colour and arrangement. See the keyboard effect below.
   const [textHidden,     setTextHidden]     = useState(false);
+  const [showNotes,      setShowNotes]      = useState(false);
+  // Briefly shown when Notes is pressed at the top level, where there is no
+  // selected bubble to attach anything to.
+  const [notesHint,      setNotesHint]      = useState(false);
+  // True while the notes panel holds an unsaved draft. Lives here rather than
+  // only in the panel because "n" can close the panel from outside it, and
+  // that route has to be able to ask before throwing the work away.
+  const [notesDirty,     setNotesDirty]     = useState(false);
   const [saveFailedToast,  setSaveFailedToast]  = useState(false);
   const [storageNearLimit, setStorageNearLimit] = useState(false);
   // null  = not dismissed this session (banner shows when storageNearLimit is true)
@@ -1471,6 +1496,7 @@ export default function MindCanvas() {
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
+      if (showNotes)    { setShowNotes(false); return; }
       if (editingId)    { setEditingId(null); return; }
       if (editMode)     { cancelEditMode(); return; }
       // quickCreate wasn't checked here at all, so pressing Escape while its
@@ -1485,7 +1511,7 @@ export default function MindCanvas() {
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, [editingId, editMode, quickCreate, showAddPanel, focusedId, cancelEditMode, stepOut, setBubbles]);
+  }, [editingId, editMode, quickCreate, showAddPanel, showNotes, focusedId, cancelEditMode, stepOut, setBubbles]);
 
   // -- Hold Tab to hide every label -----------------------------------------
   //
@@ -1500,16 +1526,10 @@ export default function MindCanvas() {
   // fields, where moving between inputs is exactly what the key is for.
 
   useEffect(() => {
-    const isTyping = (t: EventTarget | null) => {
-      const el = t as HTMLElement | null;
-      if (!el || typeof el.tagName !== 'string') return false;
-      const tag = el.tagName.toLowerCase();
-      return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable === true;
-    };
     const down = (e: KeyboardEvent) => {
       // Ctrl/Cmd/Alt+Tab belong to the OS and the browser - never shadow them.
       if (e.key !== 'Tab' || e.ctrlKey || e.metaKey || e.altKey) return;
-      if (isTyping(e.target)) return;
+      if (isTypingTarget(e.target)) return;
       // Auto-repeat fires this many times a second, and every one of those
       // still has to be swallowed or focus walks anyway.
       e.preventDefault();
@@ -1536,6 +1556,53 @@ export default function MindCanvas() {
       document.removeEventListener('visibilitychange', restore);
     };
   }, []);
+
+  // ── "n" opens notes ──────────────────────────────────────────────────────
+  //
+  // A bare letter key is the cheapest possible shortcut and also the most
+  // dangerous one: every text field on this canvas wants that same keystroke
+  // for itself. So this refuses to fire unless the whole screen is quiet —
+  // nothing focused that accepts text, and none of the panels that contain a
+  // field even open. The failure it is guarding against is not theoretical:
+  // typing a bubble name containing "n" would otherwise flip the panel open and
+  // shut under the user's hands.
+
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if (e.key !== 'n' && e.key !== 'N') return;
+      // A modified "n" is someone else's shortcut (Cmd+N opens a window).
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      // 1. The caret is in a field — including this panel's own composer.
+      if (isTypingTarget(e.target)) return;
+      // 2. Renaming a bubble in place.
+      if (editingId) return;
+      // 3. Any panel that owns a text field is open.
+      if (showAddPanel || quickCreate || showSettings) return;
+      // 4. Edit mode rewrites the bubble these notes hang off, and its own
+      //    rename field can take focus at any moment.
+      if (editMode) return;
+
+      e.preventDefault();
+      if (!focusedId) {
+        setNotesHint(true);
+        window.setTimeout(() => setNotesHint(false), 2200);
+        return;
+      }
+      if (!showNotes) { setShowNotes(true); return; }
+      // Closing with the same key must not silently bin an unsaved draft. The
+      // confirm runs here rather than inside a setState updater, which React
+      // is free to call more than once.
+      if (notesDirty && !window.confirm(DISCARD_PROMPT)) return;
+      setShowNotes(false);
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [editingId, editMode, showAddPanel, quickCreate, showSettings, focusedId, showNotes, notesDirty]);
+
+  // Notes hang off the focused bubble, so leaving it closes the panel rather
+  // than leaving it open over a bubble the user is no longer inside.
+  useEffect(() => { if (!focusedId) setShowNotes(false); }, [focusedId]);
+  useEffect(() => { if (editMode)   setShowNotes(false); }, [editMode]);
 
   // ── Pan / Pinch-to-zoom ──────────────────────────────────────────────────
 
@@ -1939,6 +2006,26 @@ export default function MindCanvas() {
     setBubbles(prev => prev.map(b => (b.id === id ? { ...b, scale: next } : b)));
   };
 
+  // ── Notes ────────────────────────────────────────────────────────────────
+  // A note belongs to one bubble and is never inherited by a parent or seen by
+  // a child, so this takes the bubble id explicitly.
+  //
+  // The panel edits a draft and calls this once, on Save. Nothing reaches the
+  // canvas until then.
+
+  const setBubbleNotes = (bubbleId: string, notes: BubbleNote[]) => {
+    setBubbles(prev => prev.map(b => {
+      if (b.id !== bubbleId) return b;
+      // Drop the key entirely when there is nothing left, so a bubble that
+      // never had notes and one whose last note was removed serialise
+      // identically — an empty array left behind would read as a change on
+      // every future signature comparison and keep the unsaved dot lit over
+      // nothing.
+      const { notes: _dropped, ...rest } = b;
+      return notes.length > 0 ? { ...rest, notes } : rest;
+    }));
+  };
+
   // ── Delete bubble (and its whole subtree) ────────────────────────────────
 
   const deleteBubble = (id: string) => {
@@ -2270,7 +2357,7 @@ export default function MindCanvas() {
         // into this corner, so leaving the buttons up put Edit and Add bubble
         // on top of the panel's own controls — covering them and taking their
         // clicks. Settings alone was not enough; the Add panel is taller.
-        style={{ display: (showSettings || showAddPanel || quickCreate) ? 'none' : undefined }}
+        style={{ display: (showSettings || showAddPanel || quickCreate || showNotes) ? 'none' : undefined }}
         onPointerDown={e => e.stopPropagation()}>
         {editMode ? (
           <>
@@ -2380,6 +2467,64 @@ export default function MindCanvas() {
             setShowSettings(false);
           }}
           onClose={() => setShowSettings(false)}
+        />
+      )}
+
+      {/* Notes (bottom-left). Mirrors the mobile app's corner button; the
+          desktop corner is otherwise empty, and "n" reaches the same thing. */}
+      {!editMode && !showSettings && !showAddPanel && !quickCreate && !showNotes && (
+        <div className="absolute bottom-6 left-6 z-50 pointer-events-auto flex flex-col items-start gap-2"
+          onPointerDown={e => e.stopPropagation()}>
+          {notesHint && (
+            <motion.span
+              initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }}
+              className="select-none whitespace-nowrap"
+              style={{
+                background: 'rgba(255,255,255,.92)', backdropFilter: 'blur(12px)',
+                WebkitBackdropFilter: 'blur(12px)', borderRadius: 14,
+                padding: '6px 12px', fontSize: 11.5, color: '#6b7280',
+                fontWeight: 300, boxShadow: '0 2px 14px rgba(0,0,0,.06)',
+              }}>
+              Open a bubble to add notes
+            </motion.span>
+          )}
+          <motion.button
+            style={{ ...pillBase, opacity: focusedId ? 1 : .6 }}
+            className="flex items-center gap-2 font-light text-gray-500 relative"
+            whileHover={focusedId ? { scale: 1.04 } : undefined}
+            whileTap={focusedId ? { scale: .97 } : undefined}
+            aria-label={focusedId ? 'Notes for this bubble (n)' : 'Notes — open a bubble first'}
+            title={focusedId ? 'Notes (n)' : 'Open a bubble to add notes'}
+            onClick={e => {
+              e.stopPropagation();
+              if (!focusedId) {
+                setNotesHint(true);
+                window.setTimeout(() => setNotesHint(false), 2200);
+                return;
+              }
+              setShowNotes(true);
+            }}>
+            <span style={{ fontSize: 13, lineHeight: 1, opacity: .7 }}>▤</span> Notes
+            {/* A bubble carrying notes says so without being opened. */}
+            {!!focusedId && (byId[focusedId]?.notes?.length ?? 0) > 0 && (
+              <span aria-hidden="true"
+                style={{
+                  position: 'absolute', top: 7, right: 7, width: 8, height: 8,
+                  borderRadius: '50%', background: 'rgba(90,80,110,.9)',
+                  boxShadow: '0 0 0 2px rgba(255,255,255,.9)',
+                }} />
+            )}
+          </motion.button>
+        </div>
+      )}
+
+      {showNotes && focusedId && byId[focusedId] && (
+        <NotesPanel
+          key={focusedId}
+          bubble={byId[focusedId]}
+          onSave={setBubbleNotes}
+          onDirtyChange={setNotesDirty}
+          onClose={() => setShowNotes(false)}
         />
       )}
 

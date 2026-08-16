@@ -219,6 +219,25 @@ function isValidBubble(b: unknown): b is BubbleData {
   if (o.angle    !== undefined && !isFiniteNumber(o.angle))       return false;
   if (o.radial   !== undefined && !isFiniteNumber(o.radial))      return false;
   if (o.scale    !== undefined && !isFiniteNumber(o.scale))       return false;
+  if (!isValidNotes(o.notes))                                      return false;
+  return true;
+}
+
+/**
+ * Mirrors the web and server checks. A malformed notes array on one bubble
+ * would otherwise make every client reject the entire map and silently fall
+ * back to its own local draft.
+ */
+function isValidNotes(v: unknown): boolean {
+  if (v === undefined) return true;
+  if (!Array.isArray(v)) return false;
+  for (const n of v) {
+    if (!n || typeof n !== 'object') return false;
+    const o = n as Record<string, unknown>;
+    if (typeof o.id !== 'string' || !o.id)  return false;
+    if (typeof o.text !== 'string')         return false;
+    if (!isFiniteNumber(o.createdAt))       return false;
+  }
   return true;
 }
 

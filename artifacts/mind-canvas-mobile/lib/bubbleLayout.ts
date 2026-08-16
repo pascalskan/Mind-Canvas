@@ -1,4 +1,4 @@
-import { BubbleData, MAX_DEPTH } from './bubbleTypes';
+import { BubbleData, BubbleNote, MAX_DEPTH } from './bubbleTypes';
 import { hslToHex } from './hslToHex';
 
 export { MAX_DEPTH };
@@ -382,12 +382,30 @@ export function resolveCollisions(
  * Kept byte-identical to the web implementation (useBubbleState.ts) so both
  * platforms agree on what "changed" means.
  */
+/**
+ * Notes folded into the fingerprint above.
+ *
+ * JSON rather than the surrounding `~`/`|` joins on purpose: note text is long
+ * free-form writing and WILL eventually contain those delimiters, and a
+ * delimiter collision here reads as "no change" — the unsaved dot stays dark
+ * over work that was never published. JSON.stringify escapes them, and an
+ * array-of-arrays has a fixed order, so web and mobile emit the same bytes.
+ *
+ * Must stay character-for-character identical to the web copy in
+ * hooks/useBubbleState.ts — syncContract.test.ts asserts exactly that.
+ */
+export function notesSignature(notes?: BubbleNote[]): string {
+  if (!notes || notes.length === 0) return '';
+  return JSON.stringify(notes.map(n => [n.id, n.createdAt, n.text]));
+}
+
 export function canvasSignature(bubbles: BubbleData[], name?: string): string {
   const parts = bubbles
     .map(b => [
       b.id, b.label, b.color, b.depth, b.parentId ?? '',
       Math.round(b.x), Math.round(b.y),
       b.angle?.toFixed(3) ?? '', b.radial?.toFixed(3) ?? '', b.scale ?? '',
+      notesSignature(b.notes),
     ].join('~'))
     .sort();
   return `${name ?? ''}::${parts.join('|')}`;

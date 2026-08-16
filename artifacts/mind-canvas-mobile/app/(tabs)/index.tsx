@@ -10,6 +10,7 @@ import CanvasView from '@/components/CanvasView';
 import AddBubblePanel from '@/components/AddBubblePanel';
 import EditBubblePanel from '@/components/EditBubblePanel';
 import SettingsPanel from '@/components/SettingsPanel';
+import NotesPanel from '@/components/NotesPanel';
 import SaveAvailablePrompt from '@/components/SaveAvailablePrompt';
 
 export default function MainScreen() {
@@ -29,6 +30,11 @@ export default function MainScreen() {
   // the desktop's hold-Tab, because there is no key to hold — the same button
   // that turns it on is the one that turns it off.
   const [textHidden, setTextHidden]     = useState(false);
+  const [showNotes, setShowNotes]       = useState(false);
+  // Shown for a moment when Notes is tapped at the top level, where there is no
+  // selected bubble to attach anything to. A disabled button that does nothing
+  // and says nothing is the worst of the options here.
+  const [notesHint, setNotesHint]       = useState(false);
   const [focusEditLabel, setFocusEditLabel] = useState(false);
   // Tracks whether the current focusEditLabel=true was consumed at mount time,
   // so a subsequent editSelection change (single-tap in edit mode) won't
@@ -40,6 +46,18 @@ export default function MainScreen() {
   // than dropping the user into a rename field on a canvas with no labels.
   useEffect(() => {
     if (editMode) setTextHidden(false);
+  }, [editMode]);
+
+  // Notes hang off the focused bubble, so stepping out of it closes the sheet
+  // rather than leaving it open over a bubble the user is no longer in.
+  useEffect(() => {
+    if (!focusedId) setShowNotes(false);
+  }, [focusedId]);
+
+  // Editing rewrites the bubble the notes belong to; the two sheets would also
+  // fight for the same bottom-of-screen space.
+  useEffect(() => {
+    if (editMode) setShowNotes(false);
   }, [editMode]);
 
   useEffect(() => {
@@ -202,7 +220,7 @@ export default function MainScreen() {
           the bottom into exactly the space these buttons occupy, so Edit and
           Add bubble sat on top of it, covering Erase canvas and taking the
           taps meant for it. */}
-      {!showAdd && !showSettings && (
+      {!showAdd && !showSettings && !showNotes && (
         <View style={[styles.toolbar, { bottom: bottomInset + 16 }]} pointerEvents="box-none">
           {editMode ? (
             <View style={styles.toolbarRow} pointerEvents="auto">
@@ -242,20 +260,48 @@ export default function MainScreen() {
         </View>
       )}
 
-      {/* ── Hide-text toggle (bottom-left) ───────────────────────────────
+      {/* ── Bottom-left cluster: hide text, then notes ───────────────────
           Sits on the toolbar's baseline, opposite the centred pills, and hides
           alongside them whenever a sheet slides up into that space. Not shown
           in edit mode: editing is about the words. */}
-      {!showAdd && !showSettings && !editMode && (
-        <View style={[styles.textToggleWrap, { bottom: bottomInset + 16 }]} pointerEvents="box-none">
-          <TouchableOpacity
-            style={[styles.iconBtn, textHidden && styles.iconBtnActive]}
-            onPress={() => { setTextHidden(v => !v); Haptics.selectionAsync(); }}
-            accessibilityRole="button"
-            accessibilityLabel={textHidden ? 'Show text' : 'Hide text'}
-          >
-            <Feather name="type" size={18} color={textHidden ? '#fff' : '#6b7280'} />
-          </TouchableOpacity>
+      {!showAdd && !showSettings && !showNotes && !editMode && (
+        <View style={[styles.cornerWrap, { bottom: bottomInset + 16 }]} pointerEvents="box-none">
+          {notesHint && (
+            <Text style={styles.cornerHint}>Open a bubble to add notes</Text>
+          )}
+          <View style={styles.cornerRow} pointerEvents="auto">
+            <TouchableOpacity
+              style={[styles.iconBtn, textHidden && styles.iconBtnActive]}
+              onPress={() => { setTextHidden(v => !v); Haptics.selectionAsync(); }}
+              accessibilityRole="button"
+              accessibilityLabel={textHidden ? 'Show text' : 'Hide text'}
+            >
+              <Feather name="type" size={18} color={textHidden ? '#fff' : '#6b7280'} />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.iconBtn, !focusedId && styles.iconBtnMuted]}
+              onPress={() => {
+                if (!focusedId) {
+                  // Say why instead of doing nothing.
+                  setNotesHint(true);
+                  setTimeout(() => setNotesHint(false), 2200);
+                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+                  return;
+                }
+                setShowNotes(true);
+                Haptics.selectionAsync();
+              }}
+              accessibilityRole="button"
+              accessibilityLabel={focusedId ? 'Notes for this bubble' : 'Notes — open a bubble first'}
+            >
+              <Feather name="file-text" size={18} color={focusedId ? '#6b7280' : '#c3c3ca'} />
+              {/* A bubble carrying notes says so without being opened. */}
+              {!!focusedId && (byId[focusedId]?.notes?.length ?? 0) > 0 && (
+                <View style={styles.notesDot} pointerEvents="none" />
+              )}
+            </TouchableOpacity>
+          </View>
         </View>
       )}
 
@@ -302,6 +348,14 @@ export default function MainScreen() {
 
       {/* ── Settings sheet ──────────────────────────────────────────────── */}
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
+
+      {/* ── Notes sheet ─────────────────────────────────────────────────────
+          key={focusedId} remounts on a focus change so the draft and any
+          half-finished edit belong to the bubble on screen, never carried
+          across from the last one. */}
+      {showNotes && focusedId && (
+        <NotesPanel key={focusedId} bubbleId={focusedId} onClose={() => setShowNotes(false)} />
+      )}
 
       {/* ── Newer-save prompt (renders nothing when there is none) ───────── */}
       <SaveAvailablePrompt />
@@ -355,11 +409,18 @@ const styles = StyleSheet.create({
     position: 'absolute', left: 12, zIndex: 55,
   },
   // Below the toolbar (zIndex 50) on purpose. On a phone narrow enough for the
-  // centred pills to reach this corner, the pills draw over this button and
+  // centred pills to reach this corner, the pills draw over these buttons and
   // take the taps in the overlap — so what you can see is always what you hit,
   // and the more important control wins.
-  textToggleWrap: {
-    position: 'absolute', left: 12, zIndex: 45,
+  cornerWrap: {
+    position: 'absolute', left: 12, zIndex: 45, alignItems: 'flex-start',
+  },
+  cornerRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  cornerHint: {
+    fontSize: 11, fontFamily: 'Inter_400Regular', color: '#6b7280',
+    backgroundColor: 'rgba(255,255,255,0.94)',
+    borderRadius: 12, paddingHorizontal: 10, paddingVertical: 5,
+    marginBottom: 8, overflow: 'hidden',
   },
   toolbar: {
     position: 'absolute', left: 0, right: 0,
@@ -386,6 +447,14 @@ const styles = StyleSheet.create({
   },
   /** On = the canvas is stripped of text, matching the Add pill's weight. */
   iconBtnActive: { backgroundColor: 'rgba(90,80,110,0.85)' },
+  /** Nothing focused: still visible and still tappable, but clearly inactive. */
+  iconBtnMuted: { backgroundColor: 'rgba(255,255,255,0.6)' },
+  notesDot: {
+    position: 'absolute', top: 9, right: 9,
+    width: 8, height: 8, borderRadius: 4,
+    backgroundColor: 'rgba(90,80,110,0.9)',
+    borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.95)',
+  },
   unsavedDot: {
     position: 'absolute', top: 8, right: 8,
     width: 9, height: 9, borderRadius: 4.5,

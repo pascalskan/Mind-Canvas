@@ -15,6 +15,13 @@
  * door with a 400, while the last good map stays intact.
  */
 
+/** Mirrors BubbleNote on both clients. */
+export interface BubbleNote {
+  id: string;
+  text: string;
+  createdAt: number;
+}
+
 /** Mirrors BubbleData on both clients. */
 export interface Bubble {
   id: string;
@@ -27,6 +34,7 @@ export interface Bubble {
   angle?: number;
   radial?: number;
   scale?: number;
+  notes?: BubbleNote[];
 }
 
 export interface MapPayload {
@@ -63,6 +71,25 @@ function isValidBubble(b: unknown): b is Bubble {
   if (o['angle'] !== undefined && !isFiniteNumber(o['angle'])) return false;
   if (o['radial'] !== undefined && !isFiniteNumber(o['radial'])) return false;
   if (o['scale'] !== undefined && !isFiniteNumber(o['scale'])) return false;
+  if (!isValidNotes(o['notes'])) return false;
+  return true;
+}
+
+/**
+ * Same rule as both clients run on the way in. Letting a malformed notes array
+ * into the shared row would make every device refuse the whole map on its next
+ * load — the exact silent, map-wide breakage this file exists to prevent.
+ */
+function isValidNotes(v: unknown): boolean {
+  if (v === undefined) return true;
+  if (!Array.isArray(v)) return false;
+  for (const n of v) {
+    if (!n || typeof n !== 'object') return false;
+    const o = n as Record<string, unknown>;
+    if (typeof o['id'] !== 'string' || !o['id']) return false;
+    if (typeof o['text'] !== 'string') return false;
+    if (!isFiniteNumber(o['createdAt'])) return false;
+  }
   return true;
 }
 

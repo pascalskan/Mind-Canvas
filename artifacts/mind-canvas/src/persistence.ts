@@ -10,6 +10,21 @@ import LZString from 'lz-string';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+/**
+ * One note attached to one bubble.
+ *
+ * Notes belong to the bubble that holds them and to nothing else — they are
+ * never inherited by a parent and never seen by a child. The panel only ever
+ * shows the notes of the bubble currently focused, which is what makes a note
+ * a property of a place on the canvas rather than of the whole map.
+ */
+export interface BubbleNote {
+  id:        string;
+  text:      string;
+  /** Epoch ms. Ordering and the "added ..." line; never used for sync. */
+  createdAt: number;
+}
+
 export interface BubbleData {
   id:        string;
   parentId?: string;
@@ -21,6 +36,8 @@ export interface BubbleData {
   angle?:    number;
   radial?:   number;
   scale?:    number;
+  /** Absent and empty mean the same thing; absent is what gets written. */
+  notes?:    BubbleNote[];
 }
 
 /** Which client wrote a save — used only for prompt wording. */
@@ -218,7 +235,28 @@ export function isValidBubble(b: unknown): b is BubbleData {
   if (o.parentId !== undefined && typeof o.parentId !== 'string') return false;
   if (o.angle    !== undefined && !isFiniteNumber(o.angle))       return false;
   if (o.radial   !== undefined && !isFiniteNumber(o.radial))      return false;
-  if (o.scale    !== undefined && !isFiniteNumber(o.scale))       return false;
+  if (o.scale    !== undefined && !isFiniteNumber(o.scale))      return false;
+  if (!isValidNotes(o.notes))                                     return false;
+  return true;
+}
+
+/**
+ * Notes must survive the same round trip as everything else here: a malformed
+ * notes array on ONE bubble makes every client reject the whole map, which
+ * strands all of them on their own local drafts with no error to explain it.
+ * So this is checked at the door on all three sides — both clients and the
+ * server — exactly like the geometry fields above.
+ */
+function isValidNotes(v: unknown): boolean {
+  if (v === undefined) return true;
+  if (!Array.isArray(v)) return false;
+  for (const n of v) {
+    if (!n || typeof n !== 'object') return false;
+    const o = n as Record<string, unknown>;
+    if (typeof o.id !== 'string' || !o.id)  return false;
+    if (typeof o.text !== 'string')         return false;
+    if (!isFiniteNumber(o.createdAt))       return false;
+  }
   return true;
 }
 
