@@ -195,6 +195,68 @@ export function fitCrumbs(total: number, m: CrumbMetrics): CrumbFit {
   return { count: floorCount, currentChars: m.minChars, ancestorChars: m.minChars };
 }
 
+// ── Completion ────────────────────────────────────────────────────────────────
+
+/**
+ * The beats of the completion animation, shared so both platforms play the
+ * same one and both delay the archive write by the same total.
+ */
+export const COMPLETE_FADE_MS  = 320;   // the glass empties out
+export const COMPLETE_FILL_MS  = 760;   // colour rises to the brim
+export const COMPLETE_POP_MS   = 300;   // and it goes
+export const COMPLETE_TOTAL_MS = COMPLETE_FADE_MS + COMPLETE_FILL_MS + COMPLETE_POP_MS;
+
+/** How much of the bubble's own colour survives in an archived fill / rim. */
+export const ARCHIVE_FILL_KEEP = 0.15;
+export const ARCHIVE_RING_KEEP = 0.55;
+
+/** r,g,b 0-255 from an `hsl()` string or a `#hex`, or null if neither. */
+function toRgb(color: string): [number, number, number] | null {
+  const hex = color.trim().match(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/);
+  if (hex) {
+    const raw = hex[1]!;
+    const full = raw.length === 3 ? raw.split('').map(c => c + c).join('') : raw;
+    return [
+      parseInt(full.slice(0, 2), 16),
+      parseInt(full.slice(2, 4), 16),
+      parseInt(full.slice(4, 6), 16),
+    ];
+  }
+  const hsl = color.trim().match(/^hsl\(\s*([\d.]+)\s*,\s*([\d.]+)%\s*,\s*([\d.]+)%\s*\)$/i);
+  if (hsl) {
+    const h = parseFloat(hsl[1]!);
+    const s = parseFloat(hsl[2]!) / 100;
+    const l = parseFloat(hsl[3]!) / 100;
+    const a = s * Math.min(l, 1 - l);
+    const f = (n: number) => {
+      const k = (n + h / 30) % 12;
+      return Math.round(255 * (l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1)));
+    };
+    return [f(0), f(8), f(4)];
+  }
+  return null;
+}
+
+/**
+ * A bubble's colour mixed toward white, for drawing archived work.
+ *
+ * Written out by hand rather than left to CSS `color-mix` because the two
+ * clients do not even store colour the same way — the website writes
+ * `hsl(250,60%,65%)` and the app writes `#8a7ad6` — and both formats travel in
+ * the same synced map. A bubble made on one device and archived on the other
+ * has to come out the same shade either way, which means one function that
+ * understands both.
+ *
+ * `keep` is how much of the original survives: 0 is white, 1 is untouched.
+ * An unrecognised format is returned as-is rather than guessed at.
+ */
+export function archiveWash(color: string, keep: number): string {
+  const rgb = toRgb(color);
+  if (!rgb) return color;
+  const mix = (c: number) => Math.round(c * keep + 255 * (1 - keep));
+  return `rgb(${mix(rgb[0])}, ${mix(rgb[1])}, ${mix(rgb[2])})`;
+}
+
 export function abbreviateCrumb(labelText: string, maxChars: number): string {
   const clean = labelText.trim().replace(/\s+/g, ' ');
   if (clean.length <= maxChars) return clean;

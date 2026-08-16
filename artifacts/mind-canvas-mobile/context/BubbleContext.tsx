@@ -8,6 +8,7 @@ import { BubbleData, MAX_DEPTH, type BubbleNote, type SaveMeta } from '@/lib/bub
 import {
   buildInitialBubbles, ringRadius, sizeForDepth, getSize, bubbleScale, ROOT_COLORS, PILLAR_COLORS,
   resolveCollisions, relativeLayer, syncPositionsFromAngleRadial, canvasSignature,
+  COMPLETE_TOTAL_MS,
   LAYER_SIZES_OVERVIEW, LAYER_SIZES_FOCUSED, SCALE_MIN, SCALE_MAX,
 } from '@/lib/bubbleLayout';
 import {
@@ -113,6 +114,8 @@ interface BubbleContextValue {
    * completed on the website too as soon as the canvas is saved.
    */
   completeBubble: (id: string) => void;
+  /** The bubble mid-animation; still on the canvas until the pop finishes. */
+  completingId:   string | null;
   /** Brings an archived branch back onto the live canvas. */
   restoreBubble:  (id: string) => void;
   /** Archived, but hanging off something that is not — the only restore point. */
@@ -462,10 +465,11 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
    * behind it — that is what gets saved and published, archive included — so
    * nothing is lost by hiding them.
    */
+  const [completingId, setCompletingId] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
 
   const stage = useMemo(() => {
-    if (!showArchived) return bubbles.filter(b => b.archivedAt === undefined);
+    if (!showArchived) return bubbles.filter(b => b.archivedAt === undefined || b.id === completingId);
     // Archived work on its own is unreadable: a completed branch shown without
     // the bubbles it hung from says what was finished but not where it sat. So
     // every ancestor of anything archived stays on screen as context, drawn
@@ -479,7 +483,7 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
       while (cur?.parentId) { keep.add(cur.parentId); cur = all[cur.parentId]; }
     }
     return bubbles.filter(b => keep.has(b.id));
-  }, [bubbles, showArchived]);
+  }, [bubbles, showArchived, completingId]);
 
   const archivedCount = useMemo(
     () => bubbles.filter(b => b.archivedAt !== undefined).length,
@@ -649,7 +653,7 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
 
   // ── Completing ────────────────────────────────────────────────────────────
 
-  const completeBubble = useCallback((id: string) => {
+  const archiveNow = useCallback((id: string) => {
     setBubbles(prev => {
       // Walk the tree off `prev`, not off the filtered view: the descendants
       // being archived have to be found in the whole map.
@@ -670,6 +674,19 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
     setFocusedId(null);
     setEditSelection(null);
   }, []);
+
+  /**
+   * Runs the animation to its end, then archives — the same order the website
+   * uses, off the same timings, so the bubble is never pulled out from under
+   * its own pop.
+   */
+  const completeBubble = useCallback((id: string) => {
+    setCompletingId(id);
+    setTimeout(() => {
+      archiveNow(id);
+      setCompletingId(null);
+    }, COMPLETE_TOTAL_MS);
+  }, [archiveNow]);
 
   const restoreBubble = useCallback((id: string) => {
     setBubbles(prev => {
@@ -854,7 +871,7 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo<BubbleContextValue>(() => ({
     bubbles: stage, focusedId, editMode, editSelection, byId, cloudSaveOk,
-    completeBubble, restoreBubble, isArchiveRoot,
+    completeBubble, completingId, restoreBubble, isArchiveRoot,
     showArchived, setShowArchived, archivedCount,
     canvasName, setCanvasName, saving, saveCanvas, saveError,
     hasUnsavedChanges, savedMeta, syncState,
@@ -866,7 +883,7 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
     exportMap, importMap, clearCanvas,
   }), [
     stage, focusedId, editMode, editSelection, byId, cloudSaveOk,
-    completeBubble, restoreBubble, isArchiveRoot, showArchived, archivedCount,
+    completeBubble, completingId, restoreBubble, isArchiveRoot, showArchived, archivedCount,
     canvasName, saving, saveCanvas, saveError, hasUnsavedChanges, savedMeta, syncState,
     pendingSave, acceptPendingSave, dismissPendingSave,
     enterEditMode, cancelEditMode, saveEditMode,

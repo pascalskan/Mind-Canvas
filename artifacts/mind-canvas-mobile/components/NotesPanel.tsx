@@ -8,6 +8,7 @@ import { Feather } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useBubbles } from '@/context/BubbleContext';
 import { useSlideIn, slideOut } from '@/lib/animation';
+import { archiveWash, ARCHIVE_FILL_KEEP, ARCHIVE_RING_KEEP } from '@/lib/bubbleLayout';
 import { KeyboardAwareScrollViewCompat } from '@/components/KeyboardAwareScrollViewCompat';
 import type { BubbleNote } from '@/lib/bubbleTypes';
 
@@ -79,6 +80,15 @@ export default function NotesPanel({ bubbleId, onClose }: Props) {
 
   const bubble = byId[bubbleId];
   const notes  = bubble?.notes ?? [];
+  // Notes belong to their bubble, so a note on completed work is completed
+  // work — same wash and dashed rim the bubble wears.
+  const archivedCard = bubble?.archivedAt !== undefined && bubble
+    ? {
+        backgroundColor: archiveWash(bubble.color, ARCHIVE_FILL_KEEP),
+        borderColor: archiveWash(bubble.color, ARCHIVE_RING_KEEP),
+        borderStyle: 'dashed' as const,
+      }
+    : null;
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft]     = useState<BubbleNote[]>([]);
@@ -219,7 +229,7 @@ export default function NotesPanel({ bubbleId, onClose }: Props) {
                   its children each keep their own.
                 </Text>
               ) : notes.map(note => (
-                <View key={note.id} style={styles.note}>
+                <View key={note.id} style={[styles.note, archivedCard]}>
                   <Text style={styles.noteText}>{note.text}</Text>
                   <Text style={styles.noteMeta}>{relativeTime(note.createdAt)}</Text>
                 </View>

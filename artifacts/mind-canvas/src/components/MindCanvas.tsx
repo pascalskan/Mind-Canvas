@@ -23,6 +23,13 @@ import {
   bubbleScale,
   abbreviateCrumb,
   fitCrumbs,
+  archiveWash,
+  ARCHIVE_FILL_KEEP,
+  ARCHIVE_RING_KEEP,
+  COMPLETE_FADE_MS,
+  COMPLETE_FILL_MS,
+  COMPLETE_POP_MS,
+  COMPLETE_TOTAL_MS,
   LABEL_MIN_PX,
   LABEL_MAX_PX,
   labelZoomOpacity,
@@ -31,16 +38,7 @@ import {
 import { applyRootDrag, applyChildDrag, shouldWriteBubbleMotionValues, isBackgroundTap, descendantsOf as descendantsOfPure } from '../lib/dragHelpers';
 import SettingsPanel from './SettingsPanel';
 import SaveAvailablePrompt from './SaveAvailablePrompt';
-/**
- * The beats of the completion animation.
- *
- * The archive write waits for the pop, so the animation and the mutation share
- * one timeline — tune here and both follow.
- */
-const COMPLETE_FADE_MS = 320;   // the glass empties out
-const COMPLETE_FILL_MS = 760;   // colour rises to the brim
-const COMPLETE_POP_MS  = 300;   // and it goes
-const COMPLETE_TOTAL_MS = COMPLETE_FADE_MS + COMPLETE_FILL_MS + COMPLETE_POP_MS;
+
 import NotesPanel, { DISCARD_PROMPT } from './NotesPanel';
 import { useBubbleState } from '../hooks/useBubbleState';
 
@@ -598,13 +596,21 @@ function fitLayout(
  * where it sat". Kept in one object because it is a look worth trying several
  * ways before settling on one.
  */
-const ARCHIVE_STYLE = {
-  /** Whole-bubble opacity. */
-  opacity: 0.42,
-  /** Desaturation on top of that: 0 leaves the hue alone, 1 is grey. */
-  desaturate: 0.35,
-  /** A dashed ring marking it archived, or null for none. */
-  ring: 'rgba(110,120,115,.5)' as string | null,
+export const ARCHIVE_STYLE = {
+  /** The paper-pale wash that replaces the glass. */
+  fill:  (color: string) => archiveWash(color, ARCHIVE_FILL_KEEP),
+  /** The dashed rim: the same hue, drawn harder. */
+  ring:  (color: string) => archiveWash(color, ARCHIVE_RING_KEEP),
+  dash:      '7 6',
+  ringWidth: 2,
+  /**
+   * Full opacity on purpose. Fading was the obvious way to say "archived" and
+   * the wrong one: labels already fade with distance, so dimming the bubble
+   * too meant a completed branch lost its names first and became a row of
+   * anonymous discs. Carrying the signal in the FILL leaves the text crisp at
+   * any zoom.
+   */
+  opacity: 1,
 };
 
 // ─── Label legibility ─────────────────────────────────────────────────────────
@@ -690,14 +696,7 @@ function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange
   const labelArmed = useRef(false);
   return (
     <div style={{ width: size, height: size }} className="relative rounded-full flex items-center justify-center">
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}
-        className="absolute inset-0 pointer-events-none overflow-visible"
-        style={ghosted ? { filter: `saturate(${1 - ARCHIVE_STYLE.desaturate})` } : undefined}>
-        {ghosted && ARCHIVE_STYLE.ring && (
-          <circle cx={size/2} cy={size/2} r={size/2 - 1}
-            fill="none" stroke={ARCHIVE_STYLE.ring} strokeWidth={2}
-            strokeDasharray="7 6" />
-        )}
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="absolute inset-0 pointer-events-none overflow-visible">
         <defs>
           <radialGradient id={`bg-${uid}`} cx="30%" cy="30%" r="70%">
             <stop offset="0%"   stopColor="#ffffff" stopOpacity=".92"/>
@@ -723,17 +722,28 @@ function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange
             <circle cx={size/2} cy={size/2} r={size/2-1}/>
           </clipPath>
         </defs>
-        {/* The glass itself. On completion it empties out, leaving only the
-            rim — which is what makes the colour rising behind it read as a
-            vessel filling rather than the bubble merely changing colour. */}
-        <motion.g
-          animate={{ opacity: completing ? .08 : 1 }}
-          transition={{ duration: COMPLETE_FADE_MS / 1000, ease: 'easeOut' }}>
-          <circle cx={size/2} cy={size/2} r={size/2-1} fill={`url(#bg-${uid})`}/>
-          <circle cx={size*.64} cy={size*.68} r={size*.38} fill={`url(#glow-${uid})`}/>
-          <ellipse cx={size*.28} cy={size*.24} rx={size*.17} ry={size*.10}
-            fill={`url(#spec-${uid})`} transform={`rotate(-40,${size*.28},${size*.24})`}/>
-        </motion.g>
+        {ghosted ? (
+          // Archived: flat wash and a dashed rim, no glass. Completed work
+          // should not still be catching the light.
+          <>
+            <circle cx={size/2} cy={size/2} r={size/2-1} fill={ARCHIVE_STYLE.fill(color)} />
+            <circle cx={size/2} cy={size/2} r={size/2-1}
+              fill="none" stroke={ARCHIVE_STYLE.ring(color)}
+              strokeWidth={ARCHIVE_STYLE.ringWidth} strokeDasharray={ARCHIVE_STYLE.dash} />
+          </>
+        ) : (
+          /* The glass itself. On completion it empties out, leaving only the
+             rim — which is what makes the colour rising behind it read as a
+             vessel filling rather than the bubble merely changing colour. */
+          <motion.g
+            animate={{ opacity: completing ? .08 : 1 }}
+            transition={{ duration: COMPLETE_FADE_MS / 1000, ease: 'easeOut' }}>
+            <circle cx={size/2} cy={size/2} r={size/2-1} fill={`url(#bg-${uid})`}/>
+            <circle cx={size*.64} cy={size*.68} r={size*.38} fill={`url(#glow-${uid})`}/>
+            <ellipse cx={size*.28} cy={size*.24} rx={size*.17} ry={size*.10}
+              fill={`url(#spec-${uid})`} transform={`rotate(-40,${size*.28},${size*.24})`}/>
+          </motion.g>
+        )}
 
         {completing && (
           <motion.rect
@@ -750,7 +760,7 @@ function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange
         )}
 
         {/* Rim last and never faded: the outline of the vessel being filled. */}
-        <circle cx={size/2} cy={size/2} r={size/2-1} fill={`url(#rim-${uid})`}/>
+        {!ghosted && <circle cx={size/2} cy={size/2} r={size/2-1} fill={`url(#rim-${uid})`}/>}
       </svg>
 
       {isEditing ? (
@@ -2450,9 +2460,7 @@ export default function MindCanvas() {
           // sat. ARCHIVE_STYLE is the whole of the difference between them.
           const isArchived = bubble.archivedAt !== undefined;
           const ghosted    = showArchived && isArchived;
-          const opacity    = visualOnly ? .64
-            : ghosted ? ARCHIVE_STYLE.opacity
-            : 1;
+          const opacity    = visualOnly ? .64 : 1;
 
           return (
             <motion.div key={bubble.id}

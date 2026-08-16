@@ -28,12 +28,15 @@ import {
   labelZoomOpacity as mobileLabelOpacity,
   pillarLabelIsCompact as mobileCompact,
   fitCrumbs as mobileFitCrumbs,
+  archiveWash as mobileWash,
+  COMPLETE_TOTAL_MS as MOBILE_COMPLETE_MS,
   type CrumbMetrics,
   LABEL_FADE_FROM_PX as MOBILE_FADE_FROM,
   LABEL_FADE_TO_PX as MOBILE_FADE_TO,
 } from './bubbleLayout';
 import { parseBubbleJson, pushToCloud, fetchFromCloud } from './persistence';
 import { STORAGE_VERSION, type BubbleData } from './bubbleTypes';
+import { hslToHex } from './hslToHex';
 
 // Web
 import { canvasSignature as webSignature } from '../../mind-canvas/src/hooks/useBubbleState';
@@ -49,6 +52,8 @@ import {
   labelZoomOpacity as webLabelOpacity,
   pillarLabelIsCompact as webCompact,
   fitCrumbs as webFitCrumbs,
+  archiveWash as webWash,
+  COMPLETE_TOTAL_MS as WEB_COMPLETE_MS,
   LABEL_FADE_FROM_PX as WEB_FADE_FROM,
   LABEL_FADE_TO_PX as WEB_FADE_TO,
 } from '../../mind-canvas/src/lib/bubbleLayout';
@@ -318,6 +323,48 @@ describe('the compact pillar label agrees across platforms', () => {
   it('never applies to a non-pillar, which fades out instead', () => {
     expect(mobileCompact(19, false)).toBe(false);
     expect(mobileCompact(0, false)).toBe(false);
+  });
+});
+
+// ─── Archived styling ─────────────────────────────────────────────────────────
+
+describe('the archive wash agrees across platforms', () => {
+  // The two clients do not store colour the same way — the website writes
+  // hsl(), the app writes hex — and both formats travel in the same synced
+  // map. A bubble made on one device and completed on the other has to come
+  // out the same shade either way.
+  const COLORS = [
+    'hsl(250,60%,65%)', 'hsl(40,65%,65%)', 'hsl(170,40%,55%)',
+    '#8a7ad6', '#d98fb0', '#4fb39a', '#FFF', '#000000',
+  ];
+
+  it.each(COLORS)('matches for %s', (color) => {
+    expect(mobileWash(color, 0.15)).toBe(webWash(color, 0.15));
+    expect(mobileWash(color, 0.55)).toBe(webWash(color, 0.55));
+  });
+
+  // hsl(250,60%,65%) and its hex are the same colour written twice; the wash
+  // has to agree with itself across the two spellings or a synced map would
+  // show one branch in two shades.
+  it('treats the same colour spelled two ways identically', () => {
+    // hslToHex(250, 60, 65) is what the app stores for the website's first
+    // pillar colour.
+    expect(mobileWash('hsl(250,60%,65%)', 0.15))
+      .toBe(mobileWash(hslToHex(250, 60, 65), 0.15));
+  });
+
+  it('keeps nothing at 0 and everything at 1', () => {
+    expect(mobileWash('#336699', 0)).toBe('rgb(255, 255, 255)');
+    expect(mobileWash('#336699', 1)).toBe('rgb(51, 102, 153)');
+  });
+
+  it('hands back anything it cannot parse rather than guessing', () => {
+    expect(mobileWash('rebeccapurple', 0.5)).toBe('rebeccapurple');
+    expect(mobileWash('', 0.5)).toBe('');
+  });
+
+  it('uses the same completion timing on both platforms', () => {
+    expect(MOBILE_COMPLETE_MS).toBe(WEB_COMPLETE_MS);
   });
 });
 

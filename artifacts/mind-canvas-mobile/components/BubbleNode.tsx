@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { Animated, StyleSheet, Text, View } from 'react-native';
 import Svg, {
   Circle, Defs, Ellipse, RadialGradient, Stop,
@@ -9,10 +9,9 @@ import { BubbleData } from '@/lib/bubbleTypes';
 import {
   LABEL_MIN_PX, LABEL_MAX_PX,
   labelZoomOpacity, pillarLabelIsCompact,
+  archiveWash, ARCHIVE_FILL_KEEP, ARCHIVE_RING_KEEP,
+  COMPLETE_FADE_MS, COMPLETE_FILL_MS, COMPLETE_POP_MS,
 } from '@/lib/bubbleLayout';
-
-/** Matches ARCHIVE_STYLE.opacity on the website. */
-const ARCHIVE_OPACITY = 0.42;
 
 interface Props {
   bubble:         BubbleData;
@@ -31,6 +30,8 @@ interface Props {
    * the same on both.
    */
   ghosted?: boolean;
+  /** Mid-completion: the glass empties, colour rises, then it pops. */
+  completing?: boolean;
   /**
    * Shared 1 -> 0 opacity driving the hide-text view, owned by CanvasView so
    * every label on the canvas fades as one. Nested UNDER the label's own zoom
@@ -44,9 +45,28 @@ interface Props {
 /** Glass sphere bubble. Positioned absolutely in screen space. */
 export const BubbleNode = React.memo(function BubbleNode({
   bubble, size, screenX, screenY, isFocused, isSelected, isGrandchild, worldDisplaySize,
-  labelReveal, ghosted,
+  labelReveal, ghosted, completing,
 }: Props) {
   const r = size / 2;
+
+  // One shot each, driven straight off the shared timings so the phone plays
+  // the same completion the website does.
+  const glass = useRef(new Animated.Value(1)).current;
+  const fill  = useRef(new Animated.Value(0)).current;
+  const pop   = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (!completing) return;
+    const anim = Animated.sequence([
+      // Opacity and transform can go native; height cannot, so the fill runs
+      // on the JS driver. Different values, so mixing the two is safe.
+      Animated.timing(glass, { toValue: 0.08, duration: COMPLETE_FADE_MS, useNativeDriver: true }),
+      Animated.timing(fill,  { toValue: 1,    duration: COMPLETE_FILL_MS, useNativeDriver: false }),
+      Animated.timing(pop,   { toValue: 1,    duration: COMPLETE_POP_MS,  useNativeDriver: true }),
+    ]);
+    anim.start();
+    return () => anim.stop();
+  }, [completing, glass, fill, pop]);
 
   // Layer-2 grandchild → tiny coloured dot, no label, no chrome
   if (isGrandchild) {
@@ -99,24 +119,50 @@ export const BubbleNode = React.memo(function BubbleNode({
   const uid = `b${bubble.id.replace(/[^a-zA-Z0-9]/g, '')}`;
 
   return (
-    <View
+    <Animated.View
       style={[
         styles.wrapper,
         { left: screenX - r, top: screenY - r, width: size, height: size },
-        ghosted ? { opacity: ARCHIVE_OPACITY } : null,
+        completing ? {
+          opacity:   pop.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }),
+          transform: [{ scale: pop.interpolate({ inputRange: [0, 1], outputRange: [1, 1.34] }) }],
+        } : null,
       ]}
       pointerEvents="none"
     >
+      {/* Archived: a pale wash of the bubble's own hue behind a dashed rim,
+          at full opacity. Fading it instead would have cost the label first,
+          since labels already fade with distance. */}
       {ghosted && (
         <View
           pointerEvents="none"
           style={[StyleSheet.absoluteFill, {
-            borderRadius: r, borderWidth: 2, borderStyle: 'dashed',
-            borderColor: 'rgba(110,120,115,0.5)',
+            borderRadius: r,
+            backgroundColor: archiveWash(bubble.color, ARCHIVE_FILL_KEEP),
+            borderWidth: 2, borderStyle: 'dashed',
+            borderColor: archiveWash(bubble.color, ARCHIVE_RING_KEEP),
           }]}
         />
       )}
+
+      {/* The colour rising to the brim, clipped to the sphere. */}
+      {completing && (
+        <View
+          pointerEvents="none"
+          style={[StyleSheet.absoluteFill, { borderRadius: r, overflow: 'hidden' }]}
+        >
+          <Animated.View style={{
+            position: 'absolute', left: 0, right: 0, bottom: 0,
+            backgroundColor: bubble.color,
+            height: fill.interpolate({ inputRange: [0, 1], outputRange: [0, size] }),
+          }} />
+        </View>
+      )}
       {/* ── SVG glass sphere ─────────────────────────────────────────────── */}
+      <Animated.View
+        style={[StyleSheet.absoluteFill, { opacity: ghosted ? 0 : glass }]}
+        pointerEvents="none"
+      >
       <Svg
         width={size}
         height={size}
@@ -166,6 +212,7 @@ export const BubbleNode = React.memo(function BubbleNode({
           transform={`rotate(-40, ${size * 0.28}, ${size * 0.24})`}
         />
       </Svg>
+      </Animated.View>
 
       {/* ── Label ────────────────────────────────────────────────────────── */}
       {/* Container is centred in the square bounding box; maxWidth keeps text
@@ -207,7 +254,7 @@ export const BubbleNode = React.memo(function BubbleNode({
           ]}
         />
       )}
-    </View>
+    </Animated.View>
   );
 });
 

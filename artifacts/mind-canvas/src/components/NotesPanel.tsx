@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import type { BubbleData, BubbleNote } from '../persistence';
+import { ARCHIVE_STYLE } from './MindCanvas';
 
 /**
  * Generous enough that no real note hits it, small enough that a runaway paste
@@ -67,6 +68,16 @@ const label = 'text-[11px] uppercase tracking-[.12em] text-gray-400 font-medium'
  */
 export default function NotesPanel({ bubble, onSave, onDirtyChange, onClose }: Props) {
   const notes = bubble.notes ?? [];
+  // Notes belong to their bubble, so a note on completed work is completed
+  // work — it wears the same wash and dashed rim the bubble does.
+  const archived = bubble.archivedAt !== undefined;
+  const cardStyle = archived
+    ? {
+        background: ARCHIVE_STYLE.fill(bubble.color),
+        boxShadow: `inset 0 0 0 ${ARCHIVE_STYLE.ringWidth}px ${ARCHIVE_STYLE.ring(bubble.color)}`,
+        borderRadius: 12,
+      }
+    : { background: 'rgba(255,255,255,.8)', boxShadow: 'inset 0 0 0 1px rgba(0,0,0,.06)' };
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft]     = useState<BubbleNote[]>([]);
@@ -229,7 +240,7 @@ export default function NotesPanel({ bubble, onSave, onDirtyChange, onClose }: P
                 ) : notes.map(note => (
                   <div key={note.id}
                     className="rounded-xl p-3"
-                    style={{ background: 'rgba(255,255,255,.8)', boxShadow: 'inset 0 0 0 1px rgba(0,0,0,.06)' }}>
+                    style={cardStyle}>
                     <p className="text-sm text-gray-700 font-light leading-relaxed whitespace-pre-wrap break-words">
                       {note.text}
                     </p>
