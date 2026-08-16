@@ -31,7 +31,7 @@ import {
 import { applyRootDrag, applyChildDrag, shouldWriteBubbleMotionValues, isBackgroundTap, descendantsOf as descendantsOfPure } from '../lib/dragHelpers';
 import SettingsPanel from './SettingsPanel';
 import SaveAvailablePrompt from './SaveAvailablePrompt';
-import StickyNote, { fanPositions, clampToOrbit } from './StickyNote';
+import StickyNote, { fanPositions, clampToOrbit, noteHeight } from './StickyNote';
 
 /** Asked before throwing away an unsaved draft, from every route that can. */
 const DISCARD_PROMPT = 'Discard your unsaved note changes?';
@@ -1614,7 +1614,8 @@ export default function MindCanvas() {
     // orbit — an imported map, or a bubble resized under a note, would
     // otherwise slip past the only check.
     const radius = (sizeMap[focusedId] ?? getSize(byId[focusedId]!)) / 2;
-    const held = clampToOrbit(dx, dy, radius);
+    const moving = (notesEditing ? notesDraft : savedNotes).find(n => n.id === noteId);
+    const held = clampToOrbit(dx, dy, radius, noteHeight(moving?.text ?? '', notesEditing));
     const place = (list: BubbleNote[]) =>
       list.map(n => (n.id === noteId ? { ...n, dx: held.x, dy: held.y } : n));
 
@@ -1627,7 +1628,7 @@ export default function MindCanvas() {
     // savedNotes at all, so the write above is a no-op for it and this is the
     // line that keeps it where it was put.
     if (notesEditing) setNotesDraft(place);
-  }, [notesEditing, focusedId, savedNotes, sizeMap, byId]);
+  }, [notesEditing, focusedId, savedNotes, notesDraft, sizeMap, byId]);
 
   /** Double-click on a note: open the session and put the caret in that note. */
   const openNote = useCallback((noteId: string) => {
@@ -2480,7 +2481,10 @@ export default function MindCanvas() {
           const centre = positionsRef.current[focusedId]
             ?? { x: notesBubble.x, y: notesBubble.y };
           const radius = (sizeMap[focusedId] ?? getSize(notesBubble)) / 2;
-          const spots  = fanPositions(notesOnCanvas.length, centre, radius);
+          // The fan measures each note, so a one-liner and a paragraph sit on
+          // the same ring without either crowding the bubble.
+          const spots  = fanPositions(
+            notesOnCanvas.map(n => noteHeight(n.text, notesEditing)), centre, radius);
           return notesOnCanvas.map((note, i) => {
             // A note that has been dragged keeps where it was put; one that
             // never has falls back to its place in the fan.

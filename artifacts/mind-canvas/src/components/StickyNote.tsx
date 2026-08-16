@@ -15,7 +15,39 @@ import { motion } from 'framer-motion';
  */
 
 export const NOTE_W = 190;
-export const NOTE_H = 148;
+
+/** A note never shrinks below a square-ish scrap, nor grows past a card. */
+export const NOTE_MIN_H = 104;
+export const NOTE_MAX_H = 330;
+
+/**
+ * How tall a note has to be to hold what is written on it.
+ *
+ * Estimated from the text rather than measured off the DOM, because the fan
+ * and the orbit both need a height BEFORE anything is rendered — measuring
+ * would mean laying out at one size, reading it back, and moving everything on
+ * a second pass, which the eye catches every time.
+ *
+ * The estimate only has to be close: the paper itself is flexbox, so a line
+ * that wraps differently than counted still sits inside the note. Being a
+ * little generous is the safe direction, and a hard ceiling stops one very
+ * long note from towering over the bubble it belongs to.
+ */
+export function noteHeight(text: string, editing = false): number {
+  // Measured against the real thing, not calculated from character widths:
+  // word wrapping leaves a ragged margin, so a 160px line at 13px takes far
+  // fewer characters than it could fit. Twenty-four clipped a long note; this
+  // errs short on purpose, which errs tall — the safe direction.
+  const CHARS_PER_LINE = 19;
+  const LINE_H = 20;
+  const lines = text.length === 0
+    ? 1
+    : text.split(/\r?\n/).reduce(
+        (n, line) => n + Math.max(1, Math.ceil(line.length / CHARS_PER_LINE)), 0);
+  // Padding top and bottom, plus the Remove row that only edit mode shows.
+  const chrome = 31 + (editing ? 30 : 0);
+  return Math.min(Math.max(chrome + lines * LINE_H, NOTE_MIN_H), NOTE_MAX_H);
+}
 
 /** Breathing room between the bubble's edge and the nearest corner of a note. */
 export const NOTE_GAP = 54;
@@ -32,8 +64,8 @@ export const ORBIT_DEPTH = 420;
  * a bubble, and one abandoned three screens away has quietly stopped saying
  * which bubble it belongs to.
  */
-export function orbitRange(bubbleRadius: number): { min: number; max: number } {
-  const min = bubbleRadius + Math.hypot(NOTE_W, NOTE_H) / 2 + NOTE_GAP;
+export function orbitRange(bubbleRadius: number, noteH: number): { min: number; max: number } {
+  const min = bubbleRadius + Math.hypot(NOTE_W, noteH) / 2 + NOTE_GAP;
   return { min, max: min + ORBIT_DEPTH };
 }
 
@@ -45,9 +77,9 @@ export function orbitRange(bubbleRadius: number): { min: number; max: number } {
  * cursor rather than sticking — it reads as a leash, not as a wall.
  */
 export function clampToOrbit(
-  dx: number, dy: number, bubbleRadius: number,
+  dx: number, dy: number, bubbleRadius: number, noteH: number,
 ): { x: number; y: number } {
-  const { min, max } = orbitRange(bubbleRadius);
+  const { min, max } = orbitRange(bubbleRadius, noteH);
   const dist = Math.hypot(dx, dy);
   // Dropped exactly on the centre: no direction to preserve, so park it right.
   if (dist < 1e-6) return { x: min, y: 0 };
@@ -137,7 +169,8 @@ export default function StickyNote({
   id, text, color, x, y, editing, onChange, onRemove, autoFocus,
   onOpen, onMoved, cameraScale = 1, baseDx, baseDy, bubbleRadius,
 }: Props) {
-  const tilt = tiltOf(id);
+  const tilt   = tiltOf(id);
+  const height = noteHeight(text, !!editing);
 
   // Drag bookkeeping. Refs rather than state: this updates on every pointer
   // move, and re-rendering the whole canvas at that rate would crawl.
@@ -172,6 +205,7 @@ export default function StickyNote({
       baseDx + dx / cameraScale,
       baseDy + dy / cameraScale,
       bubbleRadius,
+      height,
     );
     p.at = held;
     const ox = held.x - baseDx;
@@ -213,9 +247,8 @@ export default function StickyNote({
       className="absolute top-0 left-0"
       style={{
         x: x - NOTE_W / 2,
-        y: y - NOTE_H / 2,
+        y: y - height / 2,
         width: NOTE_W,
-        height: NOTE_H,
         rotate: tilt,
         // Above the bubble, below the canvas chrome.
         zIndex: 400,
@@ -231,7 +264,10 @@ export default function StickyNote({
       <div ref={live} style={{
         position: 'relative',
         cursor: editing ? 'text' : 'grab',
-        width: '100%', height: '100%',
+        // minHeight, not height: the estimate decides the layout, but if a
+        // line wraps differently than counted the paper simply grows. That
+        // makes clipped text impossible rather than merely unlikely.
+        width: '100%', minHeight: height,
         background: paperOf(color),
         boxShadow: '0 6px 18px rgba(40,40,50,.14), 0 1px 2px rgba(40,40,50,.10)',
         padding: '18px 15px 13px',
@@ -295,10 +331,11 @@ export default function StickyNote({
  * toolbar.
  */
 export function fanPositions(
-  count: number,
+  heights: number[],
   centre: { x: number; y: number },
   bubbleRadius: number,
 ): { x: number; y: number }[] {
+  const count = heights.length;
   if (count <= 0) return [];
 
   // An arc rather than a full circle, centred straight up and leaving the
@@ -312,7 +349,9 @@ export function fanPositions(
   // corner — measuring by height let both of those sit on top of the bubble,
   // which is exactly what this is here to prevent. The diagonal is the only
   // radius that holds at every angle and every tilt.
-  const clearOfBubble = bubbleRadius + Math.hypot(NOTE_W, NOTE_H) / 2 + NOTE_GAP;
+  // The tallest note sets the ring, so every note on it clears the bubble and
+  // they still sit on one circle rather than a lumpy line.
+  const clearOfBubble = orbitRange(bubbleRadius, Math.max(...heights)).min;
   const clearOfEachOther = count > 1
     ? (NOTE_W + 26) / (2 * Math.sin(SPAN / count / 2))
     : 0;
