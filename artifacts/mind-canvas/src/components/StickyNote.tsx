@@ -277,9 +277,18 @@ export default function StickyNote({
         // line wraps differently than counted the paper simply grows. That
         // makes clipped text impossible rather than merely unlikely.
         width: '100%', minHeight: height,
+        // Archived: the same treatment its bubble gets — a pale wash of the
+        // bubble's own hue behind a DASHED rim. Dashed rather than solid on
+        // purpose: it is the mark the eye reads as "finished", and a solid
+        // edge just looks like a differently-coloured note.
         background: archived ? archiveWash(color, ARCHIVE_FILL_KEEP) : paperOf(color),
+        border: archived ? `2px dashed ${archiveWash(color, ARCHIVE_RING_KEEP)}` : undefined,
+        // Explicit, so the border cannot inflate a note whose size the fan and
+        // the orbit have already been measured against.
+        boxSizing: 'border-box' as const,
+        // No drop shadow either. Completed paper is not lifting off the wall.
         boxShadow: archived
-          ? `inset 0 0 0 2px ${archiveWash(color, ARCHIVE_RING_KEEP)}`
+          ? 'none'
           : '0 6px 18px rgba(40,40,50,.14), 0 1px 2px rgba(40,40,50,.10)',
         borderRadius: archived ? 3 : undefined,
         padding: '18px 15px 13px',

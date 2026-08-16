@@ -2916,35 +2916,6 @@ export default function MindCanvas() {
         </div>
       )}
 
-      {/* Archive toggle. Sits under Settings rather than in the bottom bar
-          because it switches WHICH canvas you are looking at, which is a
-          different kind of act from editing the one in front of you. */}
-      {!editMode && !showSettings && !showAddPanel && !quickCreate && (
-        <div className="absolute top-6 z-50 pointer-events-auto"
-          style={{ left: 24, top: 76 }}
-          onPointerDown={e => e.stopPropagation()}>
-          <motion.button
-            style={{
-              ...pillBase,
-              ...(showArchived
-                ? { background: 'rgba(90,80,110,.9)', boxShadow: '0 4px 24px rgba(90,80,110,.18)' }
-                : null),
-            }}
-            className={`flex items-center gap-2 font-light ${showArchived ? 'text-white' : 'text-gray-500'}`}
-            whileHover={{ scale: 1.04 }} whileTap={{ scale: .97 }}
-            aria-pressed={showArchived}
-            onClick={e => { e.stopPropagation(); setShowArchived(v => !v); }}>
-            <span style={{ fontSize: 13, lineHeight: 1, opacity: .8 }}>🗀</span>
-            {showArchived ? 'Hide archived' : 'Show archived'}
-            {!showArchived && archivedCount > 0 && (
-              <span className="font-light" style={{ fontSize: 11.5, color: '#a3a3ad' }}>
-                {archivedCount}
-              </span>
-            )}
-          </motion.button>
-        </div>
-      )}
-
       {/* Nothing completed yet — say so rather than showing a blank canvas. */}
       {showArchived && archivedCount === 0 && (
         <p className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-30 pointer-events-none select-none text-center font-light text-gray-400"
@@ -3007,6 +2978,30 @@ export default function MindCanvas() {
               Open a bubble to add notes
             </motion.span>
           )}
+          <div className="flex items-center gap-3">
+          {/* Archive beside Notes: both change WHAT the canvas is showing
+              rather than editing what is on it. */}
+          <motion.button
+            style={{
+              ...pillBase,
+              ...(showArchived
+                ? { background: 'rgba(90,80,110,.9)', boxShadow: '0 4px 24px rgba(90,80,110,.18)' }
+                : null),
+            }}
+            className={`flex items-center gap-2 font-light relative ${showArchived ? 'text-white' : 'text-gray-500'}`}
+            whileHover={{ scale: 1.04 }} whileTap={{ scale: .97 }}
+            aria-pressed={showArchived}
+            aria-label={showArchived ? 'Leave the archive' : 'Show the archive'}
+            title={showArchived ? 'Leave the archive' : 'Show the archive'}
+            onClick={e => { e.stopPropagation(); setShowArchived(v => !v); }}>
+            <span style={{ fontSize: 13, lineHeight: 1, opacity: .8 }}>🗀</span> Archive
+            {!showArchived && archivedCount > 0 && (
+              <span className="font-light" style={{ fontSize: 11.5, color: '#a3a3ad' }}>
+                {archivedCount}
+              </span>
+            )}
+          </motion.button>
+
           <motion.button
             style={{ ...pillBase, opacity: focusedId ? 1 : .6 }}
             className="flex items-center gap-2 font-light text-gray-500 relative"
@@ -3034,6 +3029,7 @@ export default function MindCanvas() {
                 }} />
             )}
           </motion.button>
+          </div>
         </div>
       )}
 

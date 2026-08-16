@@ -233,6 +233,26 @@ export default function MainScreen() {
         </View>
       )}
 
+      {/* ── Archive (under Settings) ─────────────────────────────────────
+          A single letter, because the corner is 44pt wide and the word would
+          not fit without shrinking the target. Toggles both ways. */}
+      {!showAdd && !showSettings && !editMode && (
+        <View style={[styles.archiveWrap, { top: topInset + 52 }]} pointerEvents="box-none">
+          <TouchableOpacity
+            style={[styles.iconBtn, showArchived && styles.iconBtnActive]}
+            onPress={() => { setShowArchived(!showArchived); Haptics.selectionAsync(); }}
+            accessibilityRole="button"
+            accessibilityState={{ selected: showArchived }}
+            accessibilityLabel={showArchived ? 'Leave the archive' : 'Show the archive'}
+          >
+            <Text style={[styles.archiveLetter, showArchived && { color: '#fff' }]}>A</Text>
+            {!showArchived && archivedCount > 0 && (
+              <View style={styles.archiveDot} pointerEvents="none" />
+            )}
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* ── Breadcrumb bar ──────────────────────────────────────────────── */}
       {/* The crumbs are bubble labels, so they go with the rest of the text. */}
       {breadcrumb.length > 0 && !textHidden && (
@@ -316,17 +336,9 @@ export default function MainScreen() {
       {!showAdd && !showSettings && !showNotes && (
         <View style={[styles.toolbar, { bottom: bottomInset + 16 }]} pointerEvents="box-none">
           {showArchived ? (
-            <View style={styles.toolbarRow} pointerEvents="auto">
-              <TouchableOpacity
-                style={[styles.pill, styles.pillArchiveOn]}
-                onPress={() => { setShowArchived(false); Haptics.selectionAsync(); }}
-              >
-                <Feather name="corner-up-left" size={15} color="#fff" />
-                <Text style={[styles.pillText, { color: '#fff' }]}>
-                  Leave archive
-                </Text>
-              </TouchableOpacity>
-            </View>
+            // Nothing here belongs to completed work — the A button is the way
+            // back out.
+            <View />
           ) : editMode ? (
             <View style={styles.toolbarRow} pointerEvents="auto">
               <TouchableOpacity style={[styles.pill, styles.pillDanger]} onPress={cancelEdit}>
@@ -345,19 +357,6 @@ export default function MainScreen() {
             // save via SaveAvailablePrompt instead of a button you have to know
             // to press.
             <View style={styles.toolbarRow} pointerEvents="auto">
-              <TouchableOpacity
-                style={[styles.pill, styles.pillEdit, styles.pillIconOnly]}
-                onPress={() => { setShowArchived(true); Haptics.selectionAsync(); }}
-                accessibilityRole="button"
-                accessibilityLabel={`Show archived${archivedCount > 0 ? `, ${archivedCount}` : ''}`}
-              >
-                <Feather name="archive" size={16} color="#6b7280" />
-                {archivedCount > 0 && (
-                  <Text style={[styles.pillText, { color: '#9ca3af', fontSize: 12 }]}>
-                    {archivedCount}
-                  </Text>
-                )}
-              </TouchableOpacity>
               <TouchableOpacity style={[styles.pill, styles.pillEdit]} onPress={enterEdit}>
                 <Feather name="edit-2" size={14} color="#6b7280" />
                 <Text style={[styles.pillText, { color: '#6b7280' }]}>Edit</Text>
@@ -547,6 +546,18 @@ const styles = StyleSheet.create({
   settingsWrap: {
     position: 'absolute', left: 12, zIndex: 55,
   },
+  archiveWrap: {
+    position: 'absolute', left: 12, zIndex: 55,
+  },
+  archiveLetter: {
+    fontSize: 17, fontFamily: 'Inter_500Medium', color: '#6b7280',
+  },
+  archiveDot: {
+    position: 'absolute', top: 8, right: 8,
+    width: 9, height: 9, borderRadius: 4.5,
+    backgroundColor: 'rgba(90,80,110,0.85)',
+    borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.95)',
+  },
   // Below the toolbar (zIndex 50) on purpose. On a phone narrow enough for the
   // centred pills to reach a corner, the pills draw over the button and take
   // the taps in the overlap — so what you can see is always what you hit, and
@@ -576,8 +587,6 @@ const styles = StyleSheet.create({
   },
   pillText: { fontSize: 14, fontFamily: 'Inter_500Medium' },
   pillEdit: { backgroundColor: 'rgba(255,255,255,0.92)' },
-  pillIconOnly: { paddingHorizontal: 13 },
-  pillArchiveOn: { backgroundColor: 'rgba(90,80,110,0.85)' },
   pillAdd:  { backgroundColor: 'rgba(90,80,110,0.85)' },
   pillDone: { backgroundColor: 'rgba(80,110,90,0.85)' },
   pillDanger: { backgroundColor: 'rgba(255,255,255,0.92)' },
