@@ -4,14 +4,12 @@ import Svg, {
   Circle, Defs, Ellipse, RadialGradient, Stop,
 } from 'react-native-svg';
 import { BubbleData } from '@/lib/bubbleTypes';
-
-// Label legibility bounds, in on-screen pixels. Kept identical to the web
-// values (LABEL_* in MindCanvas.tsx) so the same canvas reads the same way on
-// both platforms.
-const LABEL_MIN_PX = 11;
-const LABEL_MAX_PX = 22;
-const LABEL_FADE_FROM_PX = 52;   // fully visible at or above this screen diameter
-const LABEL_FADE_TO_PX   = 28;   // fully transparent at or below
+// The bounds, the fade curve and the pillar exemption live in bubbleLayout so
+// web runs the identical rule and the contract test can hold the two to it.
+import {
+  LABEL_MIN_PX, LABEL_MAX_PX,
+  labelZoomOpacity, pillarLabelIsCompact,
+} from '@/lib/bubbleLayout';
 
 interface Props {
   bubble:         BubbleData;
@@ -71,15 +69,22 @@ export const BubbleNode = React.memo(function BubbleNode({
   // bounds are literal on-screen sizes. Text still scales with the canvas
   // through the comfortable middle, but stops shrinking into illegibility when
   // zoomed out and stops ballooning when zoomed in. Matches the web clamp.
+  // Pillars are the map's fixed points — the thing you orient by — so their
+  // names survive BOTH ways a label can disappear here: the hide-text view and
+  // the fade that strips labels off bubbles too small to hold them.
+  const isPillar = bubble.depth === 0;
+
   const labelFontSize = Math.min(Math.max(size * 0.135, LABEL_MIN_PX), LABEL_MAX_PX);
   // Clamping alone would leave every distant bubble carrying a full-size label,
   // turning a zoomed-out canvas into overlapping text. Fade the label out once
   // its bubble is too small on screen to hold it — at that distance the bubble
   // reads as a shape, which is all it needs to be.
-  const labelOpacity =
-    size >= LABEL_FADE_FROM_PX ? 1
-    : size <= LABEL_FADE_TO_PX ? 0
-    : (size - LABEL_FADE_TO_PX) / (LABEL_FADE_FROM_PX - LABEL_FADE_TO_PX);
+  const labelOpacity  = labelZoomOpacity(size, isPillar);
+  const compactPillar = pillarLabelIsCompact(size, isPillar);
+
+  // A pillar ignores the hide-text fade for the same reason it ignores the
+  // distance one.
+  const reveal = isPillar ? undefined : labelReveal;
 
   // Unique gradient IDs scoped to this bubble so SVG defs don't collide
   const uid = `b${bubble.id.replace(/[^a-zA-Z0-9]/g, '')}`;
@@ -144,12 +149,22 @@ export const BubbleNode = React.memo(function BubbleNode({
       {/* Container is centred in the square bounding box; maxWidth keeps text
           inside the circle at all zoom levels (matches web maxWidth: '84%'). */}
       <Animated.View
-        style={[styles.labelContainer, labelReveal ? { opacity: labelReveal } : null]}
+        style={[
+          styles.labelContainer,
+          reveal ? { opacity: reveal } : null,
+          // The container clips to the bubble, which is exactly wrong once the
+          // label is meant to sit across a marker smaller than itself.
+          compactPillar ? { overflow: 'visible' } : null,
+        ]}
         pointerEvents="none"
       >
         <Text
-          style={[styles.label, { fontSize: labelFontSize, opacity: labelOpacity, maxWidth: size * 0.84 }]}
-          numberOfLines={2}
+          style={[
+            styles.label,
+            { fontSize: labelFontSize, opacity: labelOpacity },
+            compactPillar ? null : { maxWidth: size * 0.84 },
+          ]}
+          numberOfLines={compactPillar ? 1 : 2}
           allowFontScaling={false}
         >
           {bubble.label}

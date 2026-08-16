@@ -24,6 +24,52 @@ export function sizeForDepth(depth: number): number {
 
 /** A bubble's manual scale, clamped to the range the UI actually offers. */
 
+// ── Label legibility ──────────────────────────────────────────────────────────
+//
+// Labels live in world space, so their on-screen size is (world size × camera
+// scale) — unreadably small zoomed out, absurdly large zoomed in. These bounds
+// clamp the RENDERED size instead: text still scales with the canvas through
+// the comfortable middle, but stops shrinking and stops growing at the edges.
+export const LABEL_MIN_PX = 11;
+export const LABEL_MAX_PX = 22;
+// Clamping alone would leave every distant bubble carrying a full-size label,
+// which turns a zoomed-out canvas into overlapping text. So a label also fades
+// out once its bubble is too small on screen to hold it — the bubble itself
+// still reads as a shape, which is all it is at that distance.
+export const LABEL_FADE_FROM_PX = 52;   // fully visible at or above this screen diameter
+export const LABEL_FADE_TO_PX   = 28;   // fully transparent at or below
+
+/**
+ * How visible a label is at a given on-screen bubble diameter.
+ *
+ * Pillars are exempt. They are the map's fixed points — the thing you orient
+ * by — so their names have to survive both the zoom-out fade and the hide-text
+ * view; losing them leaves a screen of anonymous coloured circles.
+ *
+ * Both platforms call this so the same canvas reads the same way on each;
+ * syncContract.test.ts asserts the two copies agree.
+ */
+export function labelZoomOpacity(diameterOnScreen: number, isPillar: boolean): number {
+  if (isPillar) return 1;
+  if (diameterOnScreen >= LABEL_FADE_FROM_PX) return 1;
+  if (diameterOnScreen <= LABEL_FADE_TO_PX)   return 0;
+  return (diameterOnScreen - LABEL_FADE_TO_PX) / (LABEL_FADE_FROM_PX - LABEL_FADE_TO_PX);
+}
+
+/**
+ * True when a pillar's label can no longer fit INSIDE its own circle.
+ *
+ * Exempting pillars from the fade is not enough on its own: the font size has a
+ * floor of LABEL_MIN_PX while the bubble keeps shrinking with the camera, so at
+ * the far end of the zoom range a pillar is under 20px across carrying an 11px
+ * label. Wrapped, that stacks several broken lines over a dot. At that range
+ * the label stops wrapping and lies across the bubble instead — a coloured
+ * marker with its name on it, which is all the label is doing that far out.
+ */
+export function pillarLabelIsCompact(diameterOnScreen: number, isPillar: boolean): boolean {
+  return isPillar && diameterOnScreen < LABEL_FADE_FROM_PX;
+}
+
 // ── Breadcrumb labels ─────────────────────────────────────────────────────────
 
 /**

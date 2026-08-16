@@ -25,6 +25,10 @@ import {
   buildInitialBubbles,
   abbreviateCrumb as mobileAbbreviate,
   CRUMB_LIMIT as MOBILE_CRUMB_LIMIT,
+  labelZoomOpacity as mobileLabelOpacity,
+  pillarLabelIsCompact as mobileCompact,
+  LABEL_FADE_FROM_PX as MOBILE_FADE_FROM,
+  LABEL_FADE_TO_PX as MOBILE_FADE_TO,
 } from './bubbleLayout';
 import { parseBubbleJson, pushToCloud, fetchFromCloud } from './persistence';
 import { STORAGE_VERSION, type BubbleData } from './bubbleTypes';
@@ -40,6 +44,10 @@ import {
 import {
   abbreviateCrumb as webAbbreviate,
   CRUMB_LIMIT as WEB_CRUMB_LIMIT,
+  labelZoomOpacity as webLabelOpacity,
+  pillarLabelIsCompact as webCompact,
+  LABEL_FADE_FROM_PX as WEB_FADE_FROM,
+  LABEL_FADE_TO_PX as WEB_FADE_TO,
 } from '../../mind-canvas/src/lib/bubbleLayout';
 
 // Server
@@ -221,6 +229,67 @@ describe('the three validators accept and reject the same maps', () => {
   ])('all three reject %s', (_label, bubbles) => {
     const v = verdicts(bubbles as unknown[]);
     expect(v).toEqual({ mobile: false, web: false, server: false });
+  });
+});
+
+// ─── Label visibility ─────────────────────────────────────────────────────────
+
+describe('label fade agrees across platforms', () => {
+  // Both platforms hold their own renderer but must agree on when a label is
+  // readable. A disagreement here is silent: the same canvas simply shows
+  // different names on the phone and the website.
+  const DIAMETERS = [0, 8, 19, 27, 28, 30, 40, 51, 52, 90, 400];
+
+  it.each(DIAMETERS)('matches for a child bubble at %ipx', (d) => {
+    expect(mobileLabelOpacity(d, false)).toBe(webLabelOpacity(d, false));
+  });
+
+  it.each(DIAMETERS)('matches for a pillar at %ipx', (d) => {
+    expect(mobileLabelOpacity(d, true)).toBe(webLabelOpacity(d, true));
+  });
+
+  it('uses the same fade thresholds on both platforms', () => {
+    expect(MOBILE_FADE_FROM).toBe(WEB_FADE_FROM);
+    expect(MOBILE_FADE_TO).toBe(WEB_FADE_TO);
+  });
+
+  // The point of the exemption: a pillar is the thing you orient by, so its
+  // name has to survive the zoom-out that strips every other label.
+  it.each(DIAMETERS)('never fades a pillar, at %ipx', (d) => {
+    expect(mobileLabelOpacity(d, true)).toBe(1);
+  });
+
+  it('still fades a non-pillar right down at distance', () => {
+    expect(mobileLabelOpacity(MOBILE_FADE_TO, false)).toBe(0);
+    expect(mobileLabelOpacity(MOBILE_FADE_TO - 10, false)).toBe(0);
+    expect(mobileLabelOpacity(MOBILE_FADE_FROM, false)).toBe(1);
+    // and still eases through the middle rather than snapping
+    const mid = mobileLabelOpacity((MOBILE_FADE_FROM + MOBILE_FADE_TO) / 2, false);
+    expect(mid).toBeGreaterThan(0);
+    expect(mid).toBeLessThan(1);
+  });
+});
+
+describe('the compact pillar label agrees across platforms', () => {
+  const DIAMETERS = [0, 19, 27, 51, 52, 90];
+
+  it.each(DIAMETERS)('matches at %ipx', (d) => {
+    expect(mobileCompact(d, true)).toBe(webCompact(d, true));
+    expect(mobileCompact(d, false)).toBe(webCompact(d, false));
+  });
+
+  // Exempting a pillar from the fade is not enough on its own: the font size
+  // has a floor while the bubble keeps shrinking, so past this point the label
+  // no longer fits inside its own circle and must stop wrapping.
+  it('kicks in exactly where the fade used to start hiding the label', () => {
+    expect(mobileCompact(MOBILE_FADE_FROM, true)).toBe(false);
+    expect(mobileCompact(MOBILE_FADE_FROM - 1, true)).toBe(true);
+    expect(mobileCompact(19, true)).toBe(true);
+  });
+
+  it('never applies to a non-pillar, which fades out instead', () => {
+    expect(mobileCompact(19, false)).toBe(false);
+    expect(mobileCompact(0, false)).toBe(false);
   });
 });
 

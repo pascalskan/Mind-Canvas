@@ -23,6 +23,10 @@ import {
   bubbleScale,
   abbreviateCrumb,
   CRUMB_LIMIT,
+  LABEL_MIN_PX,
+  LABEL_MAX_PX,
+  labelZoomOpacity,
+  pillarLabelIsCompact,
 } from '../lib/bubbleLayout';
 import { applyRootDrag, applyChildDrag, shouldWriteBubbleMotionValues, isBackgroundTap, descendantsOf as descendantsOfPure } from '../lib/dragHelpers';
 import SettingsPanel from './SettingsPanel';
@@ -597,16 +601,11 @@ function isTypingTarget(t: EventTarget | null): boolean {
   return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable === true;
 }
 
-const LABEL_MIN_PX = 11;
-const LABEL_MAX_PX = 22;
-// Clamping alone would leave every distant bubble carrying a full-size label,
-// which turns a zoomed-out canvas into overlapping text. So a label also fades
-// out once its bubble is too small on screen to hold it — the bubble itself
-// still reads as a shape, which is all it is at that distance.
-const LABEL_FADE_FROM_PX = 52;   // fully visible at or above this screen diameter
-const LABEL_FADE_TO_PX   = 28;   // fully transparent at or below
+// The bounds, the fade curve and the pillar exemption now live in
+// ../lib/bubbleLayout so mobile runs the identical rule and the contract test
+// can hold the two copies to it.
 
-function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange, onEditSave, onEditCancel, onLabelClick, cameraScale, hideLabel }: {
+function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange, onEditSave, onEditCancel, onLabelClick, cameraScale, hideLabel, isPillar }: {
   size: number; color: string; label: string;
   isEditing?: boolean; editValue?: string;
   onEditChange?: (v: string) => void; onEditSave?: () => void; onEditCancel?: () => void;
@@ -614,6 +613,12 @@ function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange
   cameraScale: MotionValue<number>;
   /** Text-hidden view: the bubble stays, its label fades out. */
   hideLabel?: boolean;
+  /**
+   * A depth-0 pillar. Pillars are the map's fixed points — the thing you
+   * orient by — so their names survive BOTH ways a label can disappear: the
+   * hold-Tab view and the fade that strips labels off distant bubbles.
+   */
+  isPillar?: boolean;
 }) {
   const uid = (color + Math.round(size)).replace(/[^a-zA-Z0-9]/g, '');
   const fontSize = Math.max(size * 0.135, 8.5);
@@ -625,21 +630,26 @@ function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange
     const onScreen = fontSize * scale;
     return Math.min(Math.max(onScreen, LABEL_MIN_PX), LABEL_MAX_PX) / scale;
   });
-  const zoomOpacity = useTransform(cameraScale, s => {
-    const diameterOnScreen = size * Math.max(s, 1e-4);
-    if (diameterOnScreen >= LABEL_FADE_FROM_PX) return 1;
-    if (diameterOnScreen <= LABEL_FADE_TO_PX)   return 0;
-    return (diameterOnScreen - LABEL_FADE_TO_PX) / (LABEL_FADE_FROM_PX - LABEL_FADE_TO_PX);
-  });
+  const zoomOpacity = useTransform(cameraScale, s =>
+    labelZoomOpacity(size * Math.max(s, 1e-4), !!isPillar));
+  // Driven by MotionValues rather than React state so the switch costs no
+  // re-renders on a canvas that is already animating every frame.
+  const labelWhiteSpace = useTransform(cameraScale, s =>
+    pillarLabelIsCompact(size * Math.max(s, 1e-4), !!isPillar) ? 'nowrap' : 'normal');
+  const labelMaxWidth = useTransform(cameraScale, s =>
+    pillarLabelIsCompact(size * Math.max(s, 1e-4), !!isPillar) ? 'none' : '84%');
   // Hiding MULTIPLIES into the distance fade rather than replacing it, so a
   // label already half-faded by zoom does not pop to full strength on the way
   // back in. Animated rather than switched: at 0.18s the release reads as the
   // words settling back onto the canvas instead of a flicker.
-  const reveal = useMotionValue(hideLabel ? 0 : 1);
+  // A pillar ignores the hold-Tab fade for the same reason it ignores the
+  // distance one.
+  const fadeOut = !!hideLabel && !isPillar;
+  const reveal = useMotionValue(fadeOut ? 0 : 1);
   useEffect(() => {
-    const controls = animate(reveal, hideLabel ? 0 : 1, { duration: .18, ease: 'easeOut' });
+    const controls = animate(reveal, fadeOut ? 0 : 1, { duration: .18, ease: 'easeOut' });
     return () => controls.stop();
-  }, [hideLabel, reveal]);
+  }, [fadeOut, reveal]);
   const labelOpacity = useTransform([zoomOpacity, reveal], ([z, r]: number[]) => z * r);
   // A rename must both START and END on the label. The second click of the
   // locking double-click presses down on the bubble (the label is inert until
@@ -692,7 +702,7 @@ function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange
         <motion.div className="relative z-10 text-gray-700 font-sans font-light tracking-wide select-none text-center break-words"
           // A label faded to nothing must not still take clicks - otherwise
           // renaming stays armed on text the user cannot see.
-          style={{ pointerEvents: onLabelClick && !hideLabel ? 'auto' : 'none', fontSize: labelFontSize, opacity: labelOpacity, lineHeight: 1.15, maxWidth: '84%' }}
+          style={{ pointerEvents: onLabelClick && !fadeOut ? 'auto' : 'none', fontSize: labelFontSize, opacity: labelOpacity, lineHeight: 1.15, maxWidth: labelMaxWidth, whiteSpace: labelWhiteSpace }}
           onPointerDown={onLabelClick
             ? e => { e.stopPropagation(); labelArmed.current = true; }
             : undefined}
@@ -2253,6 +2263,7 @@ export default function MindCanvas() {
                   // A bubble being renamed keeps its field - blanking the text
                   // someone is actively typing into is never what they meant.
                   hideLabel={textHidden && editingId !== bubble.id}
+                  isPillar={bubble.depth === 0}
                   isEditing={editingId === bubble.id} editValue={editValue}
                   onEditChange={setEditValue}
                   onEditSave={() => handleEditSave(bubble.id)}
