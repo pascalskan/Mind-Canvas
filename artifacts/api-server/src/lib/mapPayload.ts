@@ -20,6 +20,9 @@ export interface BubbleNote {
   id: string;
   text: string;
   createdAt: number;
+  /** Offset from the owning bubble's centre, once a note has been dragged. */
+  dx?: number;
+  dy?: number;
 }
 
 /** Mirrors BubbleData on both clients. */
@@ -92,6 +95,8 @@ function isValidNotes(v: unknown): boolean {
     if (typeof o['id'] !== 'string' || !o['id']) return false;
     if (typeof o['text'] !== 'string') return false;
     if (!isFiniteNumber(o['createdAt'])) return false;
+    if (o['dx'] !== undefined && !isFiniteNumber(o['dx'])) return false;
+    if (o['dy'] !== undefined && !isFiniteNumber(o['dy'])) return false;
   }
   return true;
 }

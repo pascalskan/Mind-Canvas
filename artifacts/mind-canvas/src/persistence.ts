@@ -23,6 +23,15 @@ export interface BubbleNote {
   text:      string;
   /** Epoch ms. Ordering and the "added ..." line; never used for sync. */
   createdAt: number;
+  /**
+   * Where the note sits, as an offset from its bubble's centre in world units.
+   *
+   * Relative rather than absolute so a note travels with the bubble it belongs
+   * to when that bubble is dragged. Absent means "wherever the fan puts you" —
+   * a note only earns coordinates once someone has moved it by hand.
+   */
+  dx?:       number;
+  dy?:       number;
 }
 
 export interface BubbleData {
@@ -264,6 +273,8 @@ function isValidNotes(v: unknown): boolean {
     if (typeof o.id !== 'string' || !o.id)  return false;
     if (typeof o.text !== 'string')         return false;
     if (!isFiniteNumber(o.createdAt))       return false;
+  if (o.dx !== undefined && !isFiniteNumber(o.dx)) return false;
+  if (o.dy !== undefined && !isFiniteNumber(o.dy)) return false;
   }
   return true;
 }
