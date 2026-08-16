@@ -1,5 +1,5 @@
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Animated, StyleSheet, Text, View } from 'react-native';
 import Svg, {
   Circle, Defs, Ellipse, RadialGradient, Stop,
 } from 'react-native-svg';
@@ -24,11 +24,20 @@ interface Props {
   isGrandchild:   boolean;
   /** UN-scaled world display size, used for font-size so labels don't snap */
   worldDisplaySize?: number;
+  /**
+   * Shared 1 -> 0 opacity driving the hide-text view, owned by CanvasView so
+   * every label on the canvas fades as one. Nested UNDER the label's own zoom
+   * opacity rather than multiplied into it: React Native composites nested
+   * opacities for free, so this stays a single native-driven node instead of
+   * one Animated.multiply per bubble per frame.
+   */
+  labelReveal?: Animated.Value;
 }
 
 /** Glass sphere bubble. Positioned absolutely in screen space. */
 export const BubbleNode = React.memo(function BubbleNode({
   bubble, size, screenX, screenY, isFocused, isSelected, isGrandchild, worldDisplaySize,
+  labelReveal,
 }: Props) {
   const r = size / 2;
 
@@ -134,7 +143,10 @@ export const BubbleNode = React.memo(function BubbleNode({
       {/* ── Label ────────────────────────────────────────────────────────── */}
       {/* Container is centred in the square bounding box; maxWidth keeps text
           inside the circle at all zoom levels (matches web maxWidth: '84%'). */}
-      <View style={styles.labelContainer} pointerEvents="none">
+      <Animated.View
+        style={[styles.labelContainer, labelReveal ? { opacity: labelReveal } : null]}
+        pointerEvents="none"
+      >
         <Text
           style={[styles.label, { fontSize: labelFontSize, opacity: labelOpacity, maxWidth: size * 0.84 }]}
           numberOfLines={2}
@@ -142,7 +154,7 @@ export const BubbleNode = React.memo(function BubbleNode({
         >
           {bubble.label}
         </Text>
-      </View>
+      </Animated.View>
 
       {/* ── Outer selection / focus ring ─────────────────────────────────── */}
       {(isSelected || isFocused) && (

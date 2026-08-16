@@ -24,11 +24,23 @@ export default function MainScreen() {
   const [showAdd, setShowAdd]           = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [addParentId, setAddParentId]   = useState<string | null>(null);
+  // Hide-text view: labels, breadcrumb and hint leave the screen so the map
+  // can be read as pure shape, colour and arrangement. A toggle rather than
+  // the desktop's hold-Tab, because there is no key to hold — the same button
+  // that turns it on is the one that turns it off.
+  const [textHidden, setTextHidden]     = useState(false);
   const [focusEditLabel, setFocusEditLabel] = useState(false);
   // Tracks whether the current focusEditLabel=true was consumed at mount time,
   // so a subsequent editSelection change (single-tap in edit mode) won't
   // unexpectedly auto-focus the next panel.
   const doubleTapPendingRef = useRef(false);
+
+  // Editing is about the words, so entering edit mode by any route — the
+  // toolbar button or a double-tap on a bubble — puts the text back rather
+  // than dropping the user into a rename field on a canvas with no labels.
+  useEffect(() => {
+    if (editMode) setTextHidden(false);
+  }, [editMode]);
 
   useEffect(() => {
     if (doubleTapPendingRef.current) {
@@ -108,6 +120,7 @@ export default function MainScreen() {
       <CanvasView
         onLongPressAddChild={handleLongPressAddChild}
         onDoubleTapBubble={handleDoubleTapBubble}
+        hideText={textHidden}
       />
 
       {/* ── Settings (top-left) ─────────────────────────────────────────── */}
@@ -131,7 +144,8 @@ export default function MainScreen() {
       )}
 
       {/* ── Breadcrumb bar ──────────────────────────────────────────────── */}
-      {breadcrumb.length > 0 && (
+      {/* The crumbs are bubble labels, so they go with the rest of the text. */}
+      {breadcrumb.length > 0 && !textHidden && (
         <View style={[styles.breadcrumb, { top: topInset }]} pointerEvents="box-none">
           <View style={styles.breadcrumbInner} pointerEvents="auto">
             <TouchableOpacity
@@ -177,7 +191,7 @@ export default function MainScreen() {
       )}
 
       {/* ── Hint ────────────────────────────────────────────────────────── */}
-      {!focusedId && !editMode && !showAdd && (
+      {!focusedId && !editMode && !showAdd && !textHidden && (
         <View style={[styles.hintWrap, { top: topInset + 10 }]} pointerEvents="none">
           <Text style={styles.hint}>tap to focus · hold to add child · pinch to zoom</Text>
         </View>
@@ -225,6 +239,23 @@ export default function MainScreen() {
               </TouchableOpacity>
             </View>
           )}
+        </View>
+      )}
+
+      {/* ── Hide-text toggle (bottom-left) ───────────────────────────────
+          Sits on the toolbar's baseline, opposite the centred pills, and hides
+          alongside them whenever a sheet slides up into that space. Not shown
+          in edit mode: editing is about the words. */}
+      {!showAdd && !showSettings && !editMode && (
+        <View style={[styles.textToggleWrap, { bottom: bottomInset + 16 }]} pointerEvents="box-none">
+          <TouchableOpacity
+            style={[styles.iconBtn, textHidden && styles.iconBtnActive]}
+            onPress={() => { setTextHidden(v => !v); Haptics.selectionAsync(); }}
+            accessibilityRole="button"
+            accessibilityLabel={textHidden ? 'Show text' : 'Hide text'}
+          >
+            <Feather name="type" size={18} color={textHidden ? '#fff' : '#6b7280'} />
+          </TouchableOpacity>
         </View>
       )}
 
@@ -323,6 +354,13 @@ const styles = StyleSheet.create({
   settingsWrap: {
     position: 'absolute', left: 12, zIndex: 55,
   },
+  // Below the toolbar (zIndex 50) on purpose. On a phone narrow enough for the
+  // centred pills to reach this corner, the pills draw over this button and
+  // take the taps in the overlap — so what you can see is always what you hit,
+  // and the more important control wins.
+  textToggleWrap: {
+    position: 'absolute', left: 12, zIndex: 45,
+  },
   toolbar: {
     position: 'absolute', left: 0, right: 0,
     alignItems: 'center', zIndex: 50,
@@ -346,6 +384,8 @@ const styles = StyleSheet.create({
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.08, shadowRadius: 6, elevation: 3,
   },
+  /** On = the canvas is stripped of text, matching the Add pill's weight. */
+  iconBtnActive: { backgroundColor: 'rgba(90,80,110,0.85)' },
   unsavedDot: {
     position: 'absolute', top: 8, right: 8,
     width: 9, height: 9, borderRadius: 4.5,

@@ -587,12 +587,14 @@ const LABEL_MAX_PX = 22;
 const LABEL_FADE_FROM_PX = 52;   // fully visible at or above this screen diameter
 const LABEL_FADE_TO_PX   = 28;   // fully transparent at or below
 
-function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange, onEditSave, onEditCancel, onLabelClick, cameraScale }: {
+function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange, onEditSave, onEditCancel, onLabelClick, cameraScale, hideLabel }: {
   size: number; color: string; label: string;
   isEditing?: boolean; editValue?: string;
   onEditChange?: (v: string) => void; onEditSave?: () => void; onEditCancel?: () => void;
   onLabelClick?: () => void;
   cameraScale: MotionValue<number>;
+  /** Text-hidden view: the bubble stays, its label fades out. */
+  hideLabel?: boolean;
 }) {
   const uid = (color + Math.round(size)).replace(/[^a-zA-Z0-9]/g, '');
   const fontSize = Math.max(size * 0.135, 8.5);
@@ -604,12 +606,22 @@ function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange
     const onScreen = fontSize * scale;
     return Math.min(Math.max(onScreen, LABEL_MIN_PX), LABEL_MAX_PX) / scale;
   });
-  const labelOpacity = useTransform(cameraScale, s => {
+  const zoomOpacity = useTransform(cameraScale, s => {
     const diameterOnScreen = size * Math.max(s, 1e-4);
     if (diameterOnScreen >= LABEL_FADE_FROM_PX) return 1;
     if (diameterOnScreen <= LABEL_FADE_TO_PX)   return 0;
     return (diameterOnScreen - LABEL_FADE_TO_PX) / (LABEL_FADE_FROM_PX - LABEL_FADE_TO_PX);
   });
+  // Hiding MULTIPLIES into the distance fade rather than replacing it, so a
+  // label already half-faded by zoom does not pop to full strength on the way
+  // back in. Animated rather than switched: at 0.18s the release reads as the
+  // words settling back onto the canvas instead of a flicker.
+  const reveal = useMotionValue(hideLabel ? 0 : 1);
+  useEffect(() => {
+    const controls = animate(reveal, hideLabel ? 0 : 1, { duration: .18, ease: 'easeOut' });
+    return () => controls.stop();
+  }, [hideLabel, reveal]);
+  const labelOpacity = useTransform([zoomOpacity, reveal], ([z, r]: number[]) => z * r);
   // A rename must both START and END on the label. The second click of the
   // locking double-click presses down on the bubble (the label is inert until
   // the bubble is locked) and only lands on the label once the lock re-renders,
@@ -659,7 +671,9 @@ function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange
           style={{ fontSize: Math.max(fontSize, 16), lineHeight: 1.15 }}/>
       ) : (
         <motion.div className="relative z-10 text-gray-700 font-sans font-light tracking-wide select-none text-center break-words"
-          style={{ pointerEvents: onLabelClick ? 'auto' : 'none', fontSize: labelFontSize, opacity: labelOpacity, lineHeight: 1.15, maxWidth: '84%' }}
+          // A label faded to nothing must not still take clicks - otherwise
+          // renaming stays armed on text the user cannot see.
+          style={{ pointerEvents: onLabelClick && !hideLabel ? 'auto' : 'none', fontSize: labelFontSize, opacity: labelOpacity, lineHeight: 1.15, maxWidth: '84%' }}
           onPointerDown={onLabelClick
             ? e => { e.stopPropagation(); labelArmed.current = true; }
             : undefined}
@@ -1173,6 +1187,9 @@ export default function MindCanvas() {
   const [preEditBubbles, setPreEditBubbles] = useState<BubbleData[] | null>(null);
   const [editSelection,  setEditSelection]  = useState<string | null>(null);
   const [quickCreate,    setQuickCreate]    = useState<{ id: string; parentId: string; anchor: { x: number; y: number } } | null>(null);
+  // Hold Tab: every label leaves the canvas so it can be read as pure shape,
+  // colour and arrangement. See the keyboard effect below.
+  const [textHidden,     setTextHidden]     = useState(false);
   const [saveFailedToast,  setSaveFailedToast]  = useState(false);
   const [storageNearLimit, setStorageNearLimit] = useState(false);
   // null  = not dismissed this session (banner shows when storageNearLimit is true)
@@ -1469,6 +1486,56 @@ export default function MindCanvas() {
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
   }, [editingId, editMode, quickCreate, showAddPanel, focusedId, cancelEditMode, stepOut, setBubbles]);
+
+  // -- Hold Tab to hide every label -----------------------------------------
+  //
+  // Momentary, never a toggle. The value is in the comparison - press to see
+  // the map as shape and colour, release to get the words back - and a
+  // momentary key also means there is no state to get stranded in and no
+  // second control needed to undo it.
+  //
+  // Tab is the browser's focus key, so keydown MUST preventDefault: otherwise
+  // holding it walks the focus ring through every button on the page while the
+  // user is looking at the canvas. The typing guard hands Tab back to text
+  // fields, where moving between inputs is exactly what the key is for.
+
+  useEffect(() => {
+    const isTyping = (t: EventTarget | null) => {
+      const el = t as HTMLElement | null;
+      if (!el || typeof el.tagName !== 'string') return false;
+      const tag = el.tagName.toLowerCase();
+      return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable === true;
+    };
+    const down = (e: KeyboardEvent) => {
+      // Ctrl/Cmd/Alt+Tab belong to the OS and the browser - never shadow them.
+      if (e.key !== 'Tab' || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (isTyping(e.target)) return;
+      // Auto-repeat fires this many times a second, and every one of those
+      // still has to be swallowed or focus walks anyway.
+      e.preventDefault();
+      if (e.repeat) return;
+      setTextHidden(true);
+    };
+    const up = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab') return;
+      setTextHidden(false);
+    };
+    // Anything that steals focus mid-hold - Alt+Tab, a click into devtools,
+    // switching browser tab - swallows the keyup that would bring the text
+    // back, leaving a permanently blank canvas. These put it back.
+    const restore = () => setTextHidden(false);
+
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    window.addEventListener('blur', restore);
+    document.addEventListener('visibilitychange', restore);
+    return () => {
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
+      window.removeEventListener('blur', restore);
+      document.removeEventListener('visibilitychange', restore);
+    };
+  }, []);
 
   // ── Pan / Pinch-to-zoom ──────────────────────────────────────────────────
 
@@ -1976,7 +2043,7 @@ export default function MindCanvas() {
       )}
 
       {/* Breadcrumb */}
-      {!editMode && breadcrumb.length > 0 && (
+      {!editMode && !textHidden && breadcrumb.length > 0 && (
         <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }}
           className="absolute top-5 left-1/2 -translate-x-1/2 z-40 pointer-events-none select-none flex items-center gap-1.5"
           // maxWidth keeps a deep breadcrumb from sliding under the Settings
@@ -2061,6 +2128,9 @@ export default function MindCanvas() {
                 }} />
               ) : (
                 <GlassBubbleSVG size={size} color={bubble.color} label={bubble.label} cameraScale={cameraScale}
+                  // A bubble being renamed keeps its field - blanking the text
+                  // someone is actively typing into is never what they meant.
+                  hideLabel={textHidden && editingId !== bubble.id}
                   isEditing={editingId === bubble.id} editValue={editValue}
                   onEditChange={setEditValue}
                   onEditSave={() => handleEditSave(bubble.id)}
@@ -2129,10 +2199,10 @@ export default function MindCanvas() {
       </motion.div>
 
       {/* Hint — sits at the top so it doesn't compete with the bottom action bar */}
-      {!focusedId && !editMode && !quickCreate && !showAddPanel && (
+      {!focusedId && !editMode && !quickCreate && !showAddPanel && !textHidden && (
         <motion.p className="absolute top-20 left-1/2 -translate-x-1/2 text-gray-400 font-light text-xs tracking-widest pointer-events-none select-none whitespace-nowrap z-30"
           initial={{ opacity: 0 }} animate={{ opacity: .4 }} transition={{ delay: 1.5, duration: 1.5 }}>
-          tap to enter · + to add bubbles
+          tap to enter · + to add bubbles · hold Tab to hide text
         </motion.p>
       )}
 

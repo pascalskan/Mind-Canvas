@@ -92,9 +92,11 @@ interface Props {
   onLongPressAddChild?: (parentId: string) => void;
   /** Called when the user double-taps a bubble to rename it. */
   onDoubleTapBubble?: (id: string) => void;
+  /** Hide-text view: every label fades off the canvas, the bubbles stay. */
+  hideText?: boolean;
 }
 
-export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: Props) {
+export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble, hideText }: Props) {
   const {
     bubbles, focusedId, editMode, editSelection, byId,
     setFocusedId, setEditSelection, updateBubblePosition,
@@ -110,6 +112,22 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: P
   // relative touch deltas against the camera's own x/y/scale, not against
   // absolute screen dimensions.
   const dims = useWindowDimensions();
+
+  // ── Hide-text fade ──────────────────────────────────────────────────────────
+  // One Animated.Value shared by every label on the canvas, so they leave and
+  // return together instead of each bubble cutting on its own re-render. 180ms
+  // matches the web's hold-Tab fade; native-driven, so a canvas mid-pan does
+  // not stutter while the text goes.
+  const labelReveal = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    const anim = Animated.timing(labelReveal, {
+      toValue: hideText ? 0 : 1,
+      duration: 180,
+      useNativeDriver: true,
+    });
+    anim.start();
+    return () => anim.stop();
+  }, [hideText, labelReveal]);
 
   // ── Camera ──────────────────────────────────────────────────────────────────
   const cameraRef  = useRef<Camera>({ x: dims.width / 2, y: dims.height / 2, scale: INIT_SCALE });
@@ -905,6 +923,7 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: P
             isSelected={editMode && editSelection === b.id}
             isGrandchild={layer === 2}
             worldDisplaySize={worldDisplaySize}
+            labelReveal={labelReveal}
           />
         );
       })}
@@ -934,6 +953,7 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: P
                 isSelected={false}
                 isGrandchild={layer === 2}
                 worldDisplaySize={worldDisplaySize}
+                labelReveal={labelReveal}
               />
             );
           })}
@@ -962,6 +982,7 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble }: P
               isSelected={false}
               isGrandchild={false}
               worldDisplaySize={worldDisplaySize}
+              labelReveal={labelReveal}
             />
           </Animated.View>
         );
