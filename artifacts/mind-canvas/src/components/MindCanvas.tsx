@@ -28,6 +28,7 @@ import {
   ARCHIVE_RING_KEEP,
   COMPLETE_FADE_MS,
   COMPLETE_FILL_MS,
+  COMPLETE_GLASS_OPACITY,
   COMPLETE_POP_MS,
   COMPLETE_TOTAL_MS,
   LABEL_MIN_PX,
@@ -751,7 +752,7 @@ function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange
              rim — which is what makes the colour rising behind it read as a
              vessel filling rather than the bubble merely changing colour. */
           <motion.g
-            animate={{ opacity: completing ? .08 : 1 }}
+            animate={{ opacity: completing ? COMPLETE_GLASS_OPACITY : 1 }}
             transition={{ duration: COMPLETE_FADE_MS / 1000, ease: 'easeOut' }}>
             <circle cx={size/2} cy={size/2} r={size/2-1} fill={`url(#bg-${uid})`}/>
             <circle cx={size*.64} cy={size*.68} r={size*.38} fill={`url(#glow-${uid})`}/>
@@ -761,17 +762,31 @@ function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange
         )}
 
         {completing && (
-          <motion.rect
-            x={0} width={size} fill={color}
+          // One body of water that rises as a whole, rather than a rectangle
+          // being grown. The ellipse straddling its top edge is the surface —
+          // it is what stops the fill reading as a block sliding upward, and
+          // it curves the waterline the way a meniscus does.
+          //
+          // Translated rather than resized: in framer `y` means the transform,
+          // not the SVG attribute, so moving the group is both the honest way
+          // to say "this rises" and the one that cannot drift out of step with
+          // its own height.
+          <motion.g
             clipPath={`url(#body-${uid})`}
-            initial={{ y: size, height: 0 }}
-            animate={{ y: 0, height: size }}
+            initial={{ y: size }}
+            animate={{ y: 0 }}
             transition={{
               duration: COMPLETE_FILL_MS / 1000,
               delay: COMPLETE_FADE_MS / 1000,
-              ease: [.4, 0, .3, 1],
+              // Slow at the start and easing off at the brim, the way a vessel
+              // fills — not a linear slab.
+              ease: [.32, 0, .36, 1],
             }}
-          />
+          >
+            <rect x={0} y={0} width={size} height={size * 1.25} fill={color} opacity={.82} />
+            <ellipse cx={size / 2} cy={0} rx={size / 2} ry={Math.max(2.5, size * .045)}
+              fill={color} opacity={.5} />
+          </motion.g>
         )}
 
         {/* Rim last and never faded: the outline of the vessel being filled. */}

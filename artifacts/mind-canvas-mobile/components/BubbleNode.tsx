@@ -10,7 +10,7 @@ import {
   LABEL_MIN_PX, LABEL_MAX_PX,
   labelZoomOpacity, pillarLabelIsCompact,
   archiveWash, ARCHIVE_FILL_KEEP, ARCHIVE_RING_KEEP,
-  COMPLETE_FADE_MS, COMPLETE_FILL_MS, COMPLETE_POP_MS,
+  COMPLETE_FADE_MS, COMPLETE_FILL_MS, COMPLETE_POP_MS, COMPLETE_GLASS_OPACITY,
 } from '@/lib/bubbleLayout';
 
 interface Props {
@@ -60,7 +60,7 @@ export const BubbleNode = React.memo(function BubbleNode({
     const anim = Animated.sequence([
       // Opacity and transform can go native; height cannot, so the fill runs
       // on the JS driver. Different values, so mixing the two is safe.
-      Animated.timing(glass, { toValue: 0.08, duration: COMPLETE_FADE_MS, useNativeDriver: true }),
+      Animated.timing(glass, { toValue: COMPLETE_GLASS_OPACITY, duration: COMPLETE_FADE_MS, useNativeDriver: true }),
       Animated.timing(fill,  { toValue: 1,    duration: COMPLETE_FILL_MS, useNativeDriver: false }),
       Animated.timing(pop,   { toValue: 1,    duration: COMPLETE_POP_MS,  useNativeDriver: true }),
     ]);
@@ -145,7 +145,9 @@ export const BubbleNode = React.memo(function BubbleNode({
         />
       )}
 
-      {/* The colour rising to the brim, clipped to the sphere. */}
+      {/* Water rising to the brim, clipped to the sphere. The pale band along
+          its top edge is the surface — without it the fill reads as a block
+          sliding up rather than a bubble filling. */}
       {completing && (
         <View
           pointerEvents="none"
@@ -154,8 +156,15 @@ export const BubbleNode = React.memo(function BubbleNode({
           <Animated.View style={{
             position: 'absolute', left: 0, right: 0, bottom: 0,
             backgroundColor: bubble.color,
+            opacity: 0.82,
             height: fill.interpolate({ inputRange: [0, 1], outputRange: [0, size] }),
-          }} />
+          }}>
+            <View style={{
+              position: 'absolute', top: 0, left: 0, right: 0,
+              height: Math.max(2, size * 0.045),
+              backgroundColor: '#ffffff', opacity: 0.3,
+            }} />
+          </Animated.View>
         </View>
       )}
       {/* ── SVG glass sphere ─────────────────────────────────────────────── */}

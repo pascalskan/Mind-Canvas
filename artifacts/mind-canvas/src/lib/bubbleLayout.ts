@@ -201,9 +201,19 @@ export function fitCrumbs(total: number, m: CrumbMetrics): CrumbFit {
  * The beats of the completion animation, shared so both platforms play the
  * same one and both delay the archive write by the same total.
  */
-export const COMPLETE_FADE_MS  = 320;   // the glass empties out
-export const COMPLETE_FILL_MS  = 760;   // colour rises to the brim
+export const COMPLETE_FADE_MS  = 300;   // the glass clears, but stays glass
+export const COMPLETE_FILL_MS  = 1500;  // water rises to the brim, slowly
 export const COMPLETE_POP_MS   = 300;   // and it goes
+
+/**
+ * How much of the glass survives while the bubble fills.
+ *
+ * Not zero, and that is the whole point. Emptying the bubble to nothing left
+ * the rising colour with no vessel around it, so what you saw was a disc
+ * growing out of the void rather than a bubble filling up. Keeping the glass
+ * legible is what makes the same motion read as water.
+ */
+export const COMPLETE_GLASS_OPACITY = 0.45;
 export const COMPLETE_TOTAL_MS = COMPLETE_FADE_MS + COMPLETE_FILL_MS + COMPLETE_POP_MS;
 
 /** How much of the bubble's own colour survives in an archived fill / rim. */
