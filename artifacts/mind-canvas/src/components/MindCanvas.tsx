@@ -31,7 +31,7 @@ import {
 import { applyRootDrag, applyChildDrag, shouldWriteBubbleMotionValues, isBackgroundTap, descendantsOf as descendantsOfPure } from '../lib/dragHelpers';
 import SettingsPanel from './SettingsPanel';
 import SaveAvailablePrompt from './SaveAvailablePrompt';
-import StickyNote, { fanPositions } from './StickyNote';
+import StickyNote, { fanPositions, clampToOrbit } from './StickyNote';
 
 /** Asked before throwing away an unsaved draft, from every route that can. */
 const DISCARD_PROMPT = 'Discard your unsaved note changes?';
@@ -1608,10 +1608,16 @@ export default function MindCanvas() {
     // An absolute offset, not a delta. The renderer knows where the note
     // actually is — including the fan slot of one that has never been moved —
     // so it works out the destination and this only records it.
-    const place = (list: BubbleNote[]) =>
-      list.map(n => (n.id === noteId ? { ...n, dx, dy } : n));
-
     if (!focusedId) return;
+    // Clamped again here, not only in the note. The note clamps so the drag
+    // LOOKS right; this clamps so nothing can ever be written outside the
+    // orbit — an imported map, or a bubble resized under a note, would
+    // otherwise slip past the only check.
+    const radius = (sizeMap[focusedId] ?? getSize(byId[focusedId]!)) / 2;
+    const held = clampToOrbit(dx, dy, radius);
+    const place = (list: BubbleNote[]) =>
+      list.map(n => (n.id === noteId ? { ...n, dx: held.x, dy: held.y } : n));
+
     setBubbleNotes(focusedId, place(savedNotes));
 
     // A session in progress renders the DRAFT, not the map, so the same move
@@ -1621,7 +1627,7 @@ export default function MindCanvas() {
     // savedNotes at all, so the write above is a no-op for it and this is the
     // line that keeps it where it was put.
     if (notesEditing) setNotesDraft(place);
-  }, [notesEditing, focusedId, savedNotes]);
+  }, [notesEditing, focusedId, savedNotes, sizeMap, byId]);
 
   /** Double-click on a note: open the session and put the caret in that note. */
   const openNote = useCallback((noteId: string) => {
@@ -2479,24 +2485,25 @@ export default function MindCanvas() {
             // A note that has been dragged keeps where it was put; one that
             // never has falls back to its place in the fan.
             const placed = note.dx !== undefined && note.dy !== undefined;
+            const baseDx = placed ? note.dx! : spots[i]!.x - centre.x;
+            const baseDy = placed ? note.dy! : spots[i]!.y - centre.y;
             return (
               <StickyNote
                 key={note.id}
                 id={note.id}
                 text={note.text}
                 color={notesBubble.color}
-                x={placed ? centre.x + note.dx! : spots[i]!.x}
-                y={placed ? centre.y + note.dy! : spots[i]!.y}
+                x={centre.x + baseDx}
+                y={centre.y + baseDy}
+                baseDx={baseDx}
+                baseDy={baseDy}
+                bubbleRadius={radius}
                 editing={notesEditing}
                 autoFocus={notesEditing && (openNoteId
                   ? note.id === openNoteId
                   : i === notesOnCanvas.length - 1)}
                 onOpen={() => openNote(note.id)}
-                onMoved={(mx, my) => moveNote(
-                  note.id,
-                  (placed ? note.dx! : spots[i]!.x - centre.x) + mx,
-                  (placed ? note.dy! : spots[i]!.y - centre.y) + my,
-                )}
+                onMoved={(dx, dy) => moveNote(note.id, dx, dy)}
                 cameraScale={cameraScale.get()}
                 onChange={t => setNotesDraft(d => d.map(m => (m.id === note.id ? { ...m, text: t } : m)))}
                 onRemove={() => setNotesDraft(d => d.filter(m => m.id !== note.id))}

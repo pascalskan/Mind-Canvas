@@ -20,6 +20,41 @@ export const NOTE_H = 148;
 /** Breathing room between the bubble's edge and the nearest corner of a note. */
 export const NOTE_GAP = 54;
 
+/** How far past the inner edge of the orbit a note may be pulled. */
+export const ORBIT_DEPTH = 420;
+
+/**
+ * The band a note is allowed to occupy around its bubble.
+ *
+ * Inner edge is the clearance the fan already uses — half the note's DIAGONAL
+ * past the bubble's rim, so no angle and no tilt can put paper over the bubble.
+ * Outer edge stops a note being towed off across the canvas: a note belongs to
+ * a bubble, and one abandoned three screens away has quietly stopped saying
+ * which bubble it belongs to.
+ */
+export function orbitRange(bubbleRadius: number): { min: number; max: number } {
+  const min = bubbleRadius + Math.hypot(NOTE_W, NOTE_H) / 2 + NOTE_GAP;
+  return { min, max: min + ORBIT_DEPTH };
+}
+
+/**
+ * Pull an offset back into the bubble's orbit, keeping its direction.
+ *
+ * Angle is the user's to choose and is never touched; only distance is held.
+ * So a note dragged past the outer edge slides around the bubble under the
+ * cursor rather than sticking — it reads as a leash, not as a wall.
+ */
+export function clampToOrbit(
+  dx: number, dy: number, bubbleRadius: number,
+): { x: number; y: number } {
+  const { min, max } = orbitRange(bubbleRadius);
+  const dist = Math.hypot(dx, dy);
+  // Dropped exactly on the centre: no direction to preserve, so park it right.
+  if (dist < 1e-6) return { x: min, y: 0 };
+  const held = Math.min(Math.max(dist, min), max);
+  return { x: (dx / dist) * held, y: (dy / dist) * held };
+}
+
 /** Stable small integer from an id — the source of every per-note variation. */
 function hashOf(id: string): number {
   let h = 0;
@@ -84,8 +119,13 @@ interface Props {
   autoFocus?: boolean;
   /** Double-click opens this note for writing. */
   onOpen?: () => void;
-  /** A finished drag, in world units moved. */
-  onMoved?: (worldDx: number, worldDy: number) => void;
+  /** Where this note currently sits, as an offset from the bubble's centre. */
+  baseDx: number;
+  baseDy: number;
+  /** The owning bubble's radius — sets the orbit this note is held in. */
+  bubbleRadius: number;
+  /** A finished drag, as the note's new offset from the bubble's centre. */
+  onMoved?: (dx: number, dy: number) => void;
   /** World units per screen pixel — a drag must not outrun the cursor. */
   cameraScale?: number;
 }
@@ -95,13 +135,15 @@ const DRAG_THRESHOLD = 4;
 
 export default function StickyNote({
   id, text, color, x, y, editing, onChange, onRemove, autoFocus,
-  onOpen, onMoved, cameraScale = 1,
+  onOpen, onMoved, cameraScale = 1, baseDx, baseDy, bubbleRadius,
 }: Props) {
   const tilt = tiltOf(id);
 
   // Drag bookkeeping. Refs rather than state: this updates on every pointer
   // move, and re-rendering the whole canvas at that rate would crawl.
-  const press = useRef<{ x: number; y: number; moved: boolean } | null>(null);
+  const press = useRef<
+    { x: number; y: number; moved: boolean; at: { x: number; y: number } | null }
+  | null>(null);
   const live  = useRef<HTMLDivElement>(null);
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -111,7 +153,7 @@ export default function StickyNote({
     // paper around the field still moves the note, so it can be repositioned
     // without first closing what you were writing.
     if (editing && (e.target as HTMLElement).tagName === 'TEXTAREA') return;
-    press.current = { x: e.clientX, y: e.clientY, moved: false };
+    press.current = { x: e.clientX, y: e.clientY, moved: false, at: null };
     e.currentTarget.setPointerCapture(e.pointerId);
   };
 
@@ -122,6 +164,18 @@ export default function StickyNote({
     const dy = e.clientY - p.y;
     if (!p.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
     p.moved = true;
+
+    // Held in the bubble's orbit as the cursor moves, not corrected on release
+    // — the note has to be seen to reach its limit, or the leash is a surprise
+    // that only shows up after letting go.
+    const held = clampToOrbit(
+      baseDx + dx / cameraScale,
+      baseDy + dy / cameraScale,
+      bubbleRadius,
+    );
+    p.at = held;
+    const ox = held.x - baseDx;
+    const oy = held.y - baseDy;
     // Move the element directly. The committed position is written once, on
     // release; until then this is the only thing that changes.
     //
@@ -131,10 +185,9 @@ export default function StickyNote({
     // is stored against the world, outside the rotation.
     if (live.current) {
       const rad = (-tilt * Math.PI) / 180;
-      const lx  = dx * Math.cos(rad) - dy * Math.sin(rad);
-      const ly  = dx * Math.sin(rad) + dy * Math.cos(rad);
-      live.current.style.transform =
-        `translate(${lx / cameraScale}px, ${ly / cameraScale}px)`;
+      const lx  = ox * Math.cos(rad) - oy * Math.sin(rad);
+      const ly  = ox * Math.sin(rad) + oy * Math.cos(rad);
+      live.current.style.transform = `translate(${lx}px, ${ly}px)`;
     }
   };
 
@@ -146,8 +199,9 @@ export default function StickyNote({
       e.currentTarget.releasePointerCapture(e.pointerId);
     }
     if (live.current) live.current.style.transform = '';
-    if (!p.moved) return;
-    onMoved?.((e.clientX - p.x) / cameraScale, (e.clientY - p.y) / cameraScale);
+    if (!p.moved || !p.at) return;
+    // Exactly the offset the paper was showing when released.
+    onMoved?.(p.at.x, p.at.y);
   };
 
   return (
