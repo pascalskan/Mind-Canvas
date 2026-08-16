@@ -143,6 +143,27 @@ describe('canvasSignature agrees byte-for-byte across platforms', () => {
   // A bubble that never had notes and one whose last note was deleted must
   // hash identically, or removing the final note would leave the canvas
   // permanently "unsaved" against a save that already contains it.
+  // Dragging a note is an unsaved change like any other. If the fingerprint
+  // ignored position, a note moved across the canvas would leave the unsaved
+  // dot dark and the move would never be published.
+  it('both platforms see a dragged note as a change', () => {
+    const moved = SAMPLE_WITH_NOTES.map(b => (b.id === 'b1'
+      ? { ...b, notes: [{ ...b.notes![0]!, dx: -212, dy: 84 }, b.notes![1]!] }
+      : b));
+    expect(mobileSignature(moved)).not.toBe(mobileSignature(SAMPLE_WITH_NOTES));
+    expect(webSignature(moved as never)).not.toBe(webSignature(SAMPLE_WITH_NOTES as never));
+    expect(mobileSignature(moved)).toBe(webSignature(moved as never));
+  });
+
+  // Sub-pixel drift from a drag must not read as an edit.
+  it('ignores fractional drift within the same pixel', () => {
+    const a = SAMPLE_WITH_NOTES.map(b => (b.id === 'b1'
+      ? { ...b, notes: [{ ...b.notes![0]!, dx: 100.2, dy: 40.1 }, b.notes![1]!] } : b));
+    const c = SAMPLE_WITH_NOTES.map(b => (b.id === 'b1'
+      ? { ...b, notes: [{ ...b.notes![0]!, dx: 100.4, dy: 39.9 }, b.notes![1]!] } : b));
+    expect(mobileSignature(a)).toBe(mobileSignature(c));
+  });
+
   it('an absent notes array and a removed one hash the same', () => {
     const stripped = SAMPLE_WITH_NOTES.map(b => {
       const { notes: _drop, ...rest } = b;
@@ -190,6 +211,21 @@ describe('the three validators accept and reject the same maps', () => {
   it('all three accept a map carrying notes', () => {
     const v = verdicts(SAMPLE_WITH_NOTES);
     expect(v).toEqual({ mobile: true, web: true, server: true });
+  });
+
+  it('all three accept notes carrying dragged positions', () => {
+    const v = verdicts([{ ...SAMPLE[0], notes: [
+      { id: 'n1', text: 'moved', createdAt: 1, dx: -212.5, dy: 84 },
+      { id: 'n2', text: 'never moved', createdAt: 2 },
+    ] }]);
+    expect(v).toEqual({ mobile: true, web: true, server: true });
+  });
+
+  it.each([
+    ['a non-finite dx', [{ ...SAMPLE[0], notes: [{ id: 'n', text: 'x', createdAt: 1, dx: null, dy: 0 }] }]],
+    ['a string dy',     [{ ...SAMPLE[0], notes: [{ id: 'n', text: 'x', createdAt: 1, dx: 0, dy: '4' }] }]],
+  ])('all three reject %s', (_label, bubbles) => {
+    expect(verdicts(bubbles as unknown[])).toEqual({ mobile: false, web: false, server: false });
   });
 
   it('all three accept an empty notes array', () => {

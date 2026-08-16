@@ -1256,6 +1256,8 @@ export default function MindCanvas() {
   // there is no longer a panel component to own it.
   const [notesEditing,   setNotesEditing]   = useState(false);
   const [notesDraft,     setNotesDraft]     = useState<BubbleNote[]>([]);
+  /** Which note the caret belongs in — set by a double-click on the paper. */
+  const [openNoteId,     setOpenNoteId]     = useState<string | null>(null);
   // The breadcrumb sizes itself against the window, so it has to know when the
   // window changes. The existing resize effect re-fits the CAMERA and is
   // debounced by 200ms for that reason; the bar wants the width immediately.
@@ -1594,6 +1596,35 @@ export default function MindCanvas() {
     setNotesDraft([]);
   }, [focusedId, cleanedNotes]);
 
+  /**
+   * Commit a finished drag.
+   *
+   * Position is geometry, so outside editing it lands on the map at once —
+   * the same bargain dragging a bubble already makes. While a text draft is
+   * open it goes into the draft instead, so one Cancel takes back everything
+   * that session did rather than half of it.
+   */
+  const moveNote = useCallback((noteId: string, dx: number, dy: number) => {
+    // An absolute offset, not a delta. The renderer knows where the note
+    // actually is — including the fan slot of one that has never been moved —
+    // so it works out the destination and this only records it.
+    const place = (list: BubbleNote[]) =>
+      list.map(n => (n.id === noteId ? { ...n, dx, dy } : n));
+
+    if (notesEditing) { setNotesDraft(place); return; }
+    if (!focusedId) return;
+    setBubbleNotes(focusedId, place(savedNotes));
+  }, [notesEditing, focusedId, savedNotes]);
+
+  /** Double-click on a note: open the session and put the caret in that note. */
+  const openNote = useCallback((noteId: string) => {
+    if (!notesEditing) {
+      setNotesDraft(savedNotes.length > 0 ? savedNotes.map(n => ({ ...n })) : [blankNote()]);
+      setNotesEditing(true);
+    }
+    setOpenNoteId(noteId);
+  }, [notesEditing, savedNotes]);
+
   const closeNotes = useCallback(() => {
     if (notesDirty && !window.confirm(DISCARD_PROMPT)) return;
     setShowNotes(false);
@@ -1606,6 +1637,7 @@ export default function MindCanvas() {
     if (showNotes) return;
     setNotesEditing(false);
     setNotesDraft([]);
+    setOpenNoteId(null);
   }, [showNotes]);
 
   // ── Escape ───────────────────────────────────────────────────────────────
@@ -2436,20 +2468,34 @@ export default function MindCanvas() {
             ?? { x: notesBubble.x, y: notesBubble.y };
           const radius = (sizeMap[focusedId] ?? getSize(notesBubble)) / 2;
           const spots  = fanPositions(notesOnCanvas.length, centre, radius);
-          return notesOnCanvas.map((note, i) => (
-            <StickyNote
-              key={note.id}
-              id={note.id}
-              text={note.text}
-              color={notesBubble.color}
-              x={spots[i]!.x}
-              y={spots[i]!.y}
-              editing={notesEditing}
-              autoFocus={notesEditing && i === notesOnCanvas.length - 1}
-              onChange={t => setNotesDraft(d => d.map(m => (m.id === note.id ? { ...m, text: t } : m)))}
-              onRemove={() => setNotesDraft(d => d.filter(m => m.id !== note.id))}
-            />
-          ));
+          return notesOnCanvas.map((note, i) => {
+            // A note that has been dragged keeps where it was put; one that
+            // never has falls back to its place in the fan.
+            const placed = note.dx !== undefined && note.dy !== undefined;
+            return (
+              <StickyNote
+                key={note.id}
+                id={note.id}
+                text={note.text}
+                color={notesBubble.color}
+                x={placed ? centre.x + note.dx! : spots[i]!.x}
+                y={placed ? centre.y + note.dy! : spots[i]!.y}
+                editing={notesEditing}
+                autoFocus={notesEditing && (openNoteId
+                  ? note.id === openNoteId
+                  : i === notesOnCanvas.length - 1)}
+                onOpen={() => openNote(note.id)}
+                onMoved={(mx, my) => moveNote(
+                  note.id,
+                  (placed ? note.dx! : spots[i]!.x - centre.x) + mx,
+                  (placed ? note.dy! : spots[i]!.y - centre.y) + my,
+                )}
+                cameraScale={cameraScale.get()}
+                onChange={t => setNotesDraft(d => d.map(m => (m.id === note.id ? { ...m, text: t } : m)))}
+                onRemove={() => setNotesDraft(d => d.filter(m => m.id !== note.id))}
+              />
+            );
+          });
         })()}
 
       </motion.div>

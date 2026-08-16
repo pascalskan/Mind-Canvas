@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import { motion } from 'framer-motion';
 
 /**
@@ -15,6 +16,9 @@ import { motion } from 'framer-motion';
 
 export const NOTE_W = 190;
 export const NOTE_H = 148;
+
+/** Breathing room between the bubble's edge and the nearest corner of a note. */
+export const NOTE_GAP = 54;
 
 /** Stable small integer from an id — the source of every per-note variation. */
 function hashOf(id: string): number {
@@ -78,12 +82,70 @@ interface Props {
   onChange?: (text: string) => void;
   onRemove?: () => void;
   autoFocus?: boolean;
+  /** Double-click opens this note for writing. */
+  onOpen?: () => void;
+  /** A finished drag, in world units moved. */
+  onMoved?: (worldDx: number, worldDy: number) => void;
+  /** World units per screen pixel — a drag must not outrun the cursor. */
+  cameraScale?: number;
 }
+
+/** Past this many pixels a press is a drag, and never a click. */
+const DRAG_THRESHOLD = 4;
 
 export default function StickyNote({
   id, text, color, x, y, editing, onChange, onRemove, autoFocus,
+  onOpen, onMoved, cameraScale = 1,
 }: Props) {
   const tilt = tiltOf(id);
+
+  // Drag bookkeeping. Refs rather than state: this updates on every pointer
+  // move, and re-rendering the whole canvas at that rate would crawl.
+  const press = useRef<{ x: number; y: number; moved: boolean } | null>(null);
+  const live  = useRef<HTMLDivElement>(null);
+
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    // A note being written into is a text field, not a draggable object.
+    if (editing) return;
+    press.current = { x: e.clientX, y: e.clientY, moved: false };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const p = press.current;
+    if (!p) return;
+    const dx = e.clientX - p.x;
+    const dy = e.clientY - p.y;
+    if (!p.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+    p.moved = true;
+    // Move the element directly. The committed position is written once, on
+    // release; until then this is the only thing that changes.
+    //
+    // Counter-rotated first: this element sits INSIDE the note's tilt, so a
+    // raw translate would run along the tilted axis and the paper would drift
+    // away from the cursor. The committed offset below needs no such fix — it
+    // is stored against the world, outside the rotation.
+    if (live.current) {
+      const rad = (-tilt * Math.PI) / 180;
+      const lx  = dx * Math.cos(rad) - dy * Math.sin(rad);
+      const ly  = dx * Math.sin(rad) + dy * Math.cos(rad);
+      live.current.style.transform =
+        `translate(${lx / cameraScale}px, ${ly / cameraScale}px)`;
+    }
+  };
+
+  const endPress = (e: React.PointerEvent<HTMLDivElement>) => {
+    const p = press.current;
+    press.current = null;
+    if (!p) return;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+    if (live.current) live.current.style.transform = '';
+    if (!p.moved) return;
+    onMoved?.((e.clientX - p.x) / cameraScale, (e.clientY - p.y) / cameraScale);
+  };
 
   return (
     <motion.div
@@ -101,11 +163,17 @@ export default function StickyNote({
         // Above the bubble, below the canvas chrome.
         zIndex: 400,
       }}
-      onPointerDown={e => e.stopPropagation()}
-      onPointerUp={e => e.stopPropagation()}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={endPress}
+      onPointerCancel={endPress}
+      // Double-click is what opens a note for writing; a single press is
+      // reserved for dragging, so the two never fight over the same gesture.
+      onDoubleClick={e => { e.stopPropagation(); if (!editing) onOpen?.(); }}
     >
-      <div style={{
+      <div ref={live} style={{
         position: 'relative',
+        cursor: editing ? 'text' : 'grab',
         width: '100%', height: '100%',
         background: paperOf(color),
         boxShadow: '0 6px 18px rgba(40,40,50,.14), 0 1px 2px rgba(40,40,50,.10)',
@@ -182,10 +250,12 @@ export function fanPositions(
   const CENTRE = -Math.PI / 2;
   const SPAN   = Math.PI * 1.5;
 
-  // Far enough out that a tilted note clears the bubble, and — once there are
-  // several — far enough that neighbours along the arc clear each other. Same
-  // chord reasoning ringRadius uses for sibling bubbles.
-  const clearOfBubble = bubbleRadius + NOTE_H / 2 + 40;
+  // Half the note's DIAGONAL, not half its height. A note out to the side of
+  // the arc presents its width to the bubble, and a tilted one presents a
+  // corner — measuring by height let both of those sit on top of the bubble,
+  // which is exactly what this is here to prevent. The diagonal is the only
+  // radius that holds at every angle and every tilt.
+  const clearOfBubble = bubbleRadius + Math.hypot(NOTE_W, NOTE_H) / 2 + NOTE_GAP;
   const clearOfEachOther = count > 1
     ? (NOTE_W + 26) / (2 * Math.sin(SPAN / count / 2))
     : 0;

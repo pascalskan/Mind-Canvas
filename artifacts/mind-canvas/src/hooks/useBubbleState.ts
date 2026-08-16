@@ -173,7 +173,13 @@ import {
  */
 export function notesSignature(notes?: BubbleNote[]): string {
   if (!notes || notes.length === 0) return '';
-  return JSON.stringify(notes.map(n => [n.id, n.createdAt, n.text]));
+  return JSON.stringify(notes.map(n => [
+    n.id, n.createdAt, n.text,
+    // Rounded: a drag lands on fractional world units, and raw floats would
+    // make two visually identical canvases hash differently.
+    n.dx === undefined ? '' : Math.round(n.dx),
+    n.dy === undefined ? '' : Math.round(n.dy),
+  ]));
 }
 
 export function canvasSignature(bubbles: BubbleData[], name?: string): string {
