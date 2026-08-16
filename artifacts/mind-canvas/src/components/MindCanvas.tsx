@@ -31,7 +31,23 @@ import {
 import { applyRootDrag, applyChildDrag, shouldWriteBubbleMotionValues, isBackgroundTap, descendantsOf as descendantsOfPure } from '../lib/dragHelpers';
 import SettingsPanel from './SettingsPanel';
 import SaveAvailablePrompt from './SaveAvailablePrompt';
-import NotesPanel, { DISCARD_PROMPT } from './NotesPanel';
+import StickyNote, { fanPositions } from './StickyNote';
+
+/** Asked before throwing away an unsaved draft, from every route that can. */
+const DISCARD_PROMPT = 'Discard your unsaved note changes?';
+
+function blankNote(): BubbleNote {
+  return {
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+    text: '',
+    createdAt: Date.now(),
+  };
+}
+
+/** Comparable shape for the dirty check — id and text are all that can change. */
+function notesShape(notes: BubbleNote[]): string {
+  return JSON.stringify(notes.map(n => [n.id, n.text]));
+}
 import { useBubbleState } from '../hooks/useBubbleState';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -726,12 +742,21 @@ function GlassBubbleSVG({ size, color, label, isEditing, editValue, onEditChange
 
 // Memoized — takes no props and never needs to re-render.
 const CoordinateField = memo(function CoordinateField() {
-  const worldSize = 7200;
+  // Four times the old 7200 on each side — sixteen times the drawing area, so
+  // a map can spread out (and carry sticky notes around its bubbles) without
+  // running off the ruled field.
+  const worldSize = 28800;
   const half = worldSize / 2;
   const minor = 40;
   const major = 200;
   const minorLines = Array.from({ length: worldSize / minor + 1 }, (_, i) => -half + i * minor);
   const majorLines = Array.from({ length: worldSize / major + 1 }, (_, i) => -half + i * major);
+  // The coordinate stamps are the expensive part: one per major INTERSECTION,
+  // so their count grows with the square of the world. At this size a stamp on
+  // every crossing would be about twenty thousand text nodes. Stamping every
+  // fifth line keeps the count near what it was at 7200 while covering four
+  // times the distance.
+  const labelLines = majorLines.filter((_, i) => i % 5 === 0);
 
   return (
     <svg
@@ -781,8 +806,8 @@ const CoordinateField = memo(function CoordinateField() {
 
       {/* Coordinate stamps appear at every major intersection. */}
       <g fill="#77817c" opacity=".42" fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace" fontSize="18">
-        {majorLines.filter(v => Math.abs(v) < half - 140).flatMap(x =>
-          majorLines.filter(v => Math.abs(v) < half - 140).map(y => (
+        {labelLines.filter(v => Math.abs(v) < half - 140).flatMap(x =>
+          labelLines.filter(v => Math.abs(v) < half - 140).map(y => (
             <text key={`label-${x}-${y}`} x={x + 10} y={y - 10}>{`${x / major}, ${-y / major}`}</text>
           )),
         )}
@@ -1226,7 +1251,11 @@ export default function MindCanvas() {
   // True while the notes panel holds an unsaved draft. Lives here rather than
   // only in the panel because "n" can close the panel from outside it, and
   // that route has to be able to ask before throwing the work away.
-  const [notesDirty,     setNotesDirty]     = useState(false);
+  // The notes are drawn INTO the world now rather than into a panel, so the
+  // draft they are edited through has to live out here beside the canvas —
+  // there is no longer a panel component to own it.
+  const [notesEditing,   setNotesEditing]   = useState(false);
+  const [notesDraft,     setNotesDraft]     = useState<BubbleNote[]>([]);
   // The breadcrumb sizes itself against the window, so it has to know when the
   // window changes. The existing resize effect re-fits the CAMERA and is
   // debounced by 200ms for that reason; the bar wants the width immediately.
@@ -1513,12 +1542,78 @@ export default function MindCanvas() {
     focusBubble(cur?.parentId ?? null);
   }, [focusedId, byId, focusBubble]);
 
+  // ── Notes ────────────────────────────────────────────────────────────────
+  // A note belongs to one bubble and is never inherited by a parent or seen by
+  // a child, so this takes the bubble id explicitly.
+  //
+  // The panel edits a draft and calls this once, on Save. Nothing reaches the
+  // canvas until then.
+
+  const setBubbleNotes = (bubbleId: string, notes: BubbleNote[]) => {
+    setBubbles(prev => prev.map(b => {
+      if (b.id !== bubbleId) return b;
+      // Drop the key entirely when there is nothing left, so a bubble that
+      // never had notes and one whose last note was removed serialise
+      // identically — an empty array left behind would read as a change on
+      // every future signature comparison and keep the unsaved dot lit over
+      // nothing.
+      const { notes: _dropped, ...rest } = b;
+      return notes.length > 0 ? { ...rest, notes } : rest;
+    }));
+  };
+
+  // ── Notes on the canvas ──────────────────────────────────────────────────
+  // Nothing here writes to the map. setBubbleNotes runs once, from Save.
+
+  const notesBubble  = focusedId ? byId[focusedId] : undefined;
+  const savedNotes   = notesBubble?.notes ?? [];
+  // Blank sheets are scaffolding: one the user never wrote on must not become
+  // a note on Save, and must not count as a change.
+  const cleanedNotes = notesDraft
+    .map(n => ({ ...n, text: n.text.trim() }))
+    .filter(n => n.text.length > 0);
+  const notesDirty   = notesEditing && notesShape(cleanedNotes) !== notesShape(savedNotes);
+  /** What is actually on the canvas: the draft while editing, else what is saved. */
+  const notesOnCanvas = notesEditing ? notesDraft : savedNotes;
+
+  const enterNotesEditing = useCallback(() => {
+    setNotesDraft(savedNotes.length > 0 ? savedNotes.map(n => ({ ...n })) : [blankNote()]);
+    setNotesEditing(true);
+  }, [savedNotes]);
+
+  const cancelNotesEditing = useCallback(() => {
+    if (notesDirty && !window.confirm(DISCARD_PROMPT)) return;
+    setNotesEditing(false);
+    setNotesDraft([]);
+  }, [notesDirty]);
+
+  const saveNotes = useCallback(() => {
+    if (!focusedId) return;
+    setBubbleNotes(focusedId, cleanedNotes);
+    setNotesEditing(false);
+    setNotesDraft([]);
+  }, [focusedId, cleanedNotes]);
+
+  const closeNotes = useCallback(() => {
+    if (notesDirty && !window.confirm(DISCARD_PROMPT)) return;
+    setShowNotes(false);
+    setNotesEditing(false);
+    setNotesDraft([]);
+  }, [notesDirty]);
+
+  // Leaving the bubble, or opening edit mode, ends the notes session outright.
+  useEffect(() => {
+    if (showNotes) return;
+    setNotesEditing(false);
+    setNotesDraft([]);
+  }, [showNotes]);
+
   // ── Escape ───────────────────────────────────────────────────────────────
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
-      if (showNotes)    { setShowNotes(false); return; }
+      if (showNotes)    { closeNotes(); return; }
       if (editingId)    { setEditingId(null); return; }
       if (editMode)     { cancelEditMode(); return; }
       // quickCreate wasn't checked here at all, so pressing Escape while its
@@ -1533,7 +1628,7 @@ export default function MindCanvas() {
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, [editingId, editMode, quickCreate, showAddPanel, showNotes, focusedId, cancelEditMode, stepOut, setBubbles]);
+  }, [editingId, editMode, quickCreate, showAddPanel, showNotes, focusedId, cancelEditMode, stepOut, setBubbles, closeNotes]);
 
   // -- Hold Tab to hide every label -----------------------------------------
   //
@@ -1611,15 +1706,12 @@ export default function MindCanvas() {
         return;
       }
       if (!showNotes) { setShowNotes(true); return; }
-      // Closing with the same key must not silently bin an unsaved draft. The
-      // confirm runs here rather than inside a setState updater, which React
-      // is free to call more than once.
-      if (notesDirty && !window.confirm(DISCARD_PROMPT)) return;
-      setShowNotes(false);
+      // closeNotes asks before binning an unsaved draft.
+      closeNotes();
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, [editingId, editMode, showAddPanel, quickCreate, showSettings, focusedId, showNotes, notesDirty]);
+  }, [editingId, editMode, showAddPanel, quickCreate, showSettings, focusedId, showNotes, closeNotes]);
 
   // Notes hang off the focused bubble, so leaving it closes the panel rather
   // than leaving it open over a bubble the user is no longer inside.
@@ -2028,26 +2120,6 @@ export default function MindCanvas() {
     setBubbles(prev => prev.map(b => (b.id === id ? { ...b, scale: next } : b)));
   };
 
-  // ── Notes ────────────────────────────────────────────────────────────────
-  // A note belongs to one bubble and is never inherited by a parent or seen by
-  // a child, so this takes the bubble id explicitly.
-  //
-  // The panel edits a draft and calls this once, on Save. Nothing reaches the
-  // canvas until then.
-
-  const setBubbleNotes = (bubbleId: string, notes: BubbleNote[]) => {
-    setBubbles(prev => prev.map(b => {
-      if (b.id !== bubbleId) return b;
-      // Drop the key entirely when there is nothing left, so a bubble that
-      // never had notes and one whose last note was removed serialise
-      // identically — an empty array left behind would read as a change on
-      // every future signature comparison and keep the unsaved dot lit over
-      // nothing.
-      const { notes: _dropped, ...rest } = b;
-      return notes.length > 0 ? { ...rest, notes } : rest;
-    }));
-  };
-
   // ── Delete bubble (and its whole subtree) ────────────────────────────────
 
   const deleteBubble = (id: string) => {
@@ -2221,7 +2293,11 @@ export default function MindCanvas() {
 
         <CoordinateField />
 
-        {bubbles.filter(b => isInThreeLayerView(b, focusedId, byId)).map(bubble => {
+        {/* In notes mode the canvas clears to the one bubble being annotated,
+            so its notes have the space to fan out around it. */}
+        {bubbles.filter(b => showNotes
+          ? b.id === focusedId
+          : isInThreeLayerView(b, focusedId, byId)).map(bubble => {
           const layer = relativeLayer(bubble.id, focusedId, byId);
           // Size always comes from the relative layer, matching the solver.
           const size  = sizeMap[bubble.id] ?? getSize(bubble);
@@ -2352,6 +2428,30 @@ export default function MindCanvas() {
             </motion.div>
           );
         })}
+        {/* ── Sticky notes ──────────────────────────────────────────────
+            Drawn inside the world transform, so they pan and zoom with the
+            bubble they belong to instead of floating over it. */}
+        {showNotes && focusedId && notesBubble && (() => {
+          const centre = positionsRef.current[focusedId]
+            ?? { x: notesBubble.x, y: notesBubble.y };
+          const radius = (sizeMap[focusedId] ?? getSize(notesBubble)) / 2;
+          const spots  = fanPositions(notesOnCanvas.length, centre, radius);
+          return notesOnCanvas.map((note, i) => (
+            <StickyNote
+              key={note.id}
+              id={note.id}
+              text={note.text}
+              color={notesBubble.color}
+              x={spots[i]!.x}
+              y={spots[i]!.y}
+              editing={notesEditing}
+              autoFocus={notesEditing && i === notesOnCanvas.length - 1}
+              onChange={t => setNotesDraft(d => d.map(m => (m.id === note.id ? { ...m, text: t } : m)))}
+              onRemove={() => setNotesDraft(d => d.filter(m => m.id !== note.id))}
+            />
+          ));
+        })()}
+
       </motion.div>
 
       {/* Hint — sits at the top so it doesn't compete with the bottom action bar */}
@@ -2587,14 +2687,82 @@ export default function MindCanvas() {
         </div>
       )}
 
-      {showNotes && focusedId && byId[focusedId] && (
-        <NotesPanel
-          key={focusedId}
-          bubble={byId[focusedId]}
-          onSave={setBubbleNotes}
-          onDirtyChange={setNotesDirty}
-          onClose={() => setShowNotes(false)}
-        />
+      {/* Notes controls. The notes themselves are out on the canvas now, so
+          all that is left down here is the verbs — kept to one compact bar so
+          it does not compete with the paper it acts on. */}
+      {showNotes && notesBubble && (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
+          className="absolute bottom-6 left-1/2 -translate-x-1/2 z-50 pointer-events-auto flex items-center gap-2"
+          style={{ ...pillBase, padding: '9px 12px' }}
+          onPointerDown={e => e.stopPropagation()}
+          onPointerUp={e => e.stopPropagation()}>
+
+          <span style={{
+            width: 9, height: 9, borderRadius: '50%',
+            background: notesBubble.color, flexShrink: 0, marginLeft: 4,
+          }} />
+          <span className="font-light text-gray-600 truncate"
+            style={{ maxWidth: 180, fontSize: 13 }}>{notesBubble.label}</span>
+          <span className="font-light text-gray-400" style={{ fontSize: 12 }}>
+            {notesOnCanvas.length === 0
+              ? 'no notes'
+              : `${notesOnCanvas.length} note${notesOnCanvas.length === 1 ? '' : 's'}`}
+          </span>
+
+          <span style={{ width: 1, height: 20, background: 'rgba(0,0,0,.09)', margin: '0 4px' }} />
+
+          {notesEditing ? (
+            <>
+              <button
+                className="font-light text-gray-500 px-3 py-1.5 rounded-full"
+                style={{ fontSize: 12.5, background: 'rgba(0,0,0,.045)' }}
+                onClick={() => setNotesDraft(d => [...d, blankNote()])}>
+                + Another
+              </button>
+              <button
+                className="font-light text-gray-500 px-3 py-1.5 rounded-full"
+                style={{ fontSize: 12.5, background: 'rgba(0,0,0,.045)' }}
+                onClick={cancelNotesEditing}>
+                Cancel
+              </button>
+              <button
+                className="font-light text-white px-3.5 py-1.5 rounded-full"
+                disabled={!notesDirty}
+                style={{
+                  fontSize: 12.5, background: 'rgba(90,80,110,.9)',
+                  opacity: notesDirty ? 1 : .4,
+                  cursor: notesDirty ? 'pointer' : 'default',
+                }}
+                onClick={saveNotes}>
+                Save notes
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                className="font-light text-white px-3.5 py-1.5 rounded-full"
+                style={{ fontSize: 12.5, background: 'rgba(90,80,110,.9)' }}
+                onClick={enterNotesEditing}>
+                {savedNotes.length === 0 ? 'Add notes' : 'Edit notes'}
+              </button>
+              <button
+                className="font-light text-gray-500 px-3 py-1.5 rounded-full"
+                style={{ fontSize: 12.5, background: 'rgba(0,0,0,.045)' }}
+                onClick={closeNotes}>
+                Done
+              </button>
+            </>
+          )}
+        </motion.div>
+      )}
+
+      {/* Nothing written here yet — say so on the canvas, where the eye is. */}
+      {showNotes && notesBubble && notesOnCanvas.length === 0 && (
+        <p className="absolute left-1/2 -translate-x-1/2 z-40 pointer-events-none select-none font-light text-gray-400 text-center"
+          style={{ bottom: 96, fontSize: 12.5, letterSpacing: '.03em' }}>
+          Notes you add stay with this bubble — its parent and its children each keep their own.
+        </p>
       )}
 
       {/* Newer-save prompt */}
