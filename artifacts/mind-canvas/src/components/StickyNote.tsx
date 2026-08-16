@@ -106,8 +106,11 @@ export default function StickyNote({
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     e.stopPropagation();
-    // A note being written into is a text field, not a draggable object.
-    if (editing) return;
+    // While a note is open for writing the FIELD belongs to the caret —
+    // pressing in it places the cursor, and dragging in it selects text. The
+    // paper around the field still moves the note, so it can be repositioned
+    // without first closing what you were writing.
+    if (editing && (e.target as HTMLElement).tagName === 'TEXTAREA') return;
     press.current = { x: e.clientX, y: e.clientY, moved: false };
     e.currentTarget.setPointerCapture(e.pointerId);
   };
@@ -200,7 +203,7 @@ export default function StickyNote({
               className="flex-1 w-full bg-transparent outline-none resize-none"
               style={{
                 fontSize: 13, lineHeight: 1.5, color: '#44444c',
-                fontWeight: 300, letterSpacing: '.01em',
+                fontWeight: 300, letterSpacing: '.01em', cursor: 'text',
               }}
             />
             <button

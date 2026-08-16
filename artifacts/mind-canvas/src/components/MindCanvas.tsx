@@ -1599,10 +1599,10 @@ export default function MindCanvas() {
   /**
    * Commit a finished drag.
    *
-   * Position is geometry, so outside editing it lands on the map at once —
-   * the same bargain dragging a bubble already makes. While a text draft is
-   * open it goes into the draft instead, so one Cancel takes back everything
-   * that session did rather than half of it.
+   * Where a note sits is map state, exactly like where a bubble sits, so it
+   * lands at once and is never something the user has to save. Publishing the
+   * canvas publishes it along with everything else; the Save button in the
+   * notes bar is only ever about the words.
    */
   const moveNote = useCallback((noteId: string, dx: number, dy: number) => {
     // An absolute offset, not a delta. The renderer knows where the note
@@ -1611,9 +1611,16 @@ export default function MindCanvas() {
     const place = (list: BubbleNote[]) =>
       list.map(n => (n.id === noteId ? { ...n, dx, dy } : n));
 
-    if (notesEditing) { setNotesDraft(place); return; }
     if (!focusedId) return;
     setBubbleNotes(focusedId, place(savedNotes));
+
+    // A session in progress renders the DRAFT, not the map, so the same move
+    // has to be written there too — otherwise the paper springs back under the
+    // cursor the moment it is dropped, and Cancel would undo a position the
+    // user was never asked to save. A note still only in the draft is not in
+    // savedNotes at all, so the write above is a no-op for it and this is the
+    // line that keeps it where it was put.
+    if (notesEditing) setNotesDraft(place);
   }, [notesEditing, focusedId, savedNotes]);
 
   /** Double-click on a note: open the session and put the caret in that note. */
