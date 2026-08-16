@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Platform, Pressable, StyleSheet, Text, TouchableOpacity, View,
+  Alert, Platform, Pressable, StyleSheet, Text, TouchableOpacity, View,
   useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -27,6 +27,7 @@ export default function MainScreen() {
     enterEditMode, cancelEditMode, saveEditMode,
     cloudSaveOk, saveError, hasUnsavedChanges,
     showArchived, setShowArchived, archivedCount,
+    restoreBubble, isArchiveRoot,
   } = useBubbles();
 
   const insets = useSafeAreaInsets();
@@ -148,9 +149,48 @@ export default function MainScreen() {
   // ── Long-press: add child of tapped bubble ─────────────────────────────────
 
   const handleLongPressAddChild = useCallback((parentId: string) => {
+    if (showArchived) {
+      // Long-press already means "do something with this bubble". In the
+      // archive there is only one thing to do with one, so it restores.
+      if (!isArchiveRoot(parentId)) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+        Alert.alert(
+          'Restore the whole branch',
+          'This bubble was completed as part of a larger branch. '
+          + 'Hold the topmost archived bubble to bring all of it back.',
+          [{ text: 'OK' }],
+        );
+        return;
+      }
+      const family = new Set<string>([parentId]);
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (const b of bubbles) {
+          if (b.parentId && family.has(b.parentId) && !family.has(b.id)) {
+            family.add(b.id); grew = true;
+          }
+        }
+      }
+      const label = byId[parentId]?.label ?? 'this bubble';
+      Alert.alert(
+        `Restore "${label}"?`,
+        `${family.size} bubble${family.size === 1 ? '' : 's'} come back onto the canvas.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Restore', onPress: () => {
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              restoreBubble(parentId);
+            },
+          },
+        ],
+      );
+      return;
+    }
     setAddParentId(parentId);
     setShowAdd(true);
-  }, []);
+  }, [showArchived, isArchiveRoot, bubbles, byId, restoreBubble]);
 
   const handleDoubleTapBubble = useCallback((id: string) => {
     doubleTapPendingRef.current = true;
@@ -243,6 +283,12 @@ export default function MainScreen() {
               </React.Fragment>
             ))}
           </View>
+        </View>
+      )}
+
+      {showArchived && archivedCount > 0 && (
+        <View style={[styles.hintWrap, { top: topInset + 10 }]} pointerEvents="none">
+          <Text style={styles.hint}>hold an archived bubble to restore it</Text>
         </View>
       )}
 

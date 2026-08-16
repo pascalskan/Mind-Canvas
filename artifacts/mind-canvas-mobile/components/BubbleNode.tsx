@@ -11,6 +11,9 @@ import {
   labelZoomOpacity, pillarLabelIsCompact,
 } from '@/lib/bubbleLayout';
 
+/** Matches ARCHIVE_STYLE.opacity on the website. */
+const ARCHIVE_OPACITY = 0.42;
+
 interface Props {
   bubble:         BubbleData;
   size:           number;
@@ -22,6 +25,12 @@ interface Props {
   isGrandchild:   boolean;
   /** UN-scaled world display size, used for font-size so labels don't snap */
   worldDisplaySize?: number;
+  /**
+   * Archived, seen in the archive view among its live ancestors. Held to the
+   * same numbers as the website's ARCHIVE_STYLE so a completed branch reads
+   * the same on both.
+   */
+  ghosted?: boolean;
   /**
    * Shared 1 -> 0 opacity driving the hide-text view, owned by CanvasView so
    * every label on the canvas fades as one. Nested UNDER the label's own zoom
@@ -35,7 +44,7 @@ interface Props {
 /** Glass sphere bubble. Positioned absolutely in screen space. */
 export const BubbleNode = React.memo(function BubbleNode({
   bubble, size, screenX, screenY, isFocused, isSelected, isGrandchild, worldDisplaySize,
-  labelReveal,
+  labelReveal, ghosted,
 }: Props) {
   const r = size / 2;
 
@@ -91,9 +100,22 @@ export const BubbleNode = React.memo(function BubbleNode({
 
   return (
     <View
-      style={[styles.wrapper, { left: screenX - r, top: screenY - r, width: size, height: size }]}
+      style={[
+        styles.wrapper,
+        { left: screenX - r, top: screenY - r, width: size, height: size },
+        ghosted ? { opacity: ARCHIVE_OPACITY } : null,
+      ]}
       pointerEvents="none"
     >
+      {ghosted && (
+        <View
+          pointerEvents="none"
+          style={[StyleSheet.absoluteFill, {
+            borderRadius: r, borderWidth: 2, borderStyle: 'dashed',
+            borderColor: 'rgba(110,120,115,0.5)',
+          }]}
+        />
+      )}
       {/* ── SVG glass sphere ─────────────────────────────────────────────── */}
       <Svg
         width={size}

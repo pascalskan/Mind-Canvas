@@ -113,6 +113,10 @@ interface BubbleContextValue {
    * completed on the website too as soon as the canvas is saved.
    */
   completeBubble: (id: string) => void;
+  /** Brings an archived branch back onto the live canvas. */
+  restoreBubble:  (id: string) => void;
+  /** Archived, but hanging off something that is not — the only restore point. */
+  isArchiveRoot:  (id: string) => boolean;
   /** Archive view: the live canvas hides and completed work takes its place. */
   showArchived:    boolean;
   setShowArchived: (on: boolean) => void;
@@ -460,10 +464,22 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
    */
   const [showArchived, setShowArchived] = useState(false);
 
-  const stage = useMemo(
-    () => bubbles.filter(b => (b.archivedAt !== undefined) === showArchived),
-    [bubbles, showArchived],
-  );
+  const stage = useMemo(() => {
+    if (!showArchived) return bubbles.filter(b => b.archivedAt === undefined);
+    // Archived work on its own is unreadable: a completed branch shown without
+    // the bubbles it hung from says what was finished but not where it sat. So
+    // every ancestor of anything archived stays on screen as context, drawn
+    // normally while the archived ones are ghosted.
+    const all  = Object.fromEntries(bubbles.map(b => [b.id, b]));
+    const keep = new Set<string>();
+    for (const b of bubbles) {
+      if (b.archivedAt === undefined) continue;
+      keep.add(b.id);
+      let cur: BubbleData | undefined = b;
+      while (cur?.parentId) { keep.add(cur.parentId); cur = all[cur.parentId]; }
+    }
+    return bubbles.filter(b => keep.has(b.id));
+  }, [bubbles, showArchived]);
 
   const archivedCount = useMemo(
     () => bubbles.filter(b => b.archivedAt !== undefined).length,
@@ -655,6 +671,40 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
     setEditSelection(null);
   }, []);
 
+  const restoreBubble = useCallback((id: string) => {
+    setBubbles(prev => {
+      const family = new Set<string>([id]);
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (const b of prev) {
+          if (b.parentId && family.has(b.parentId) && !family.has(b.id)) {
+            family.add(b.id); grew = true;
+          }
+        }
+      }
+      return prev.map(b => {
+        if (!family.has(b.id)) return b;
+        // Drop the key rather than blanking it, so a restored bubble
+        // serialises identically to one that was never archived.
+        const { archivedAt: _gone, ...rest } = b;
+        return rest as BubbleData;
+      });
+    });
+  }, []);
+
+  /**
+   * Restore is offered on archive ROOTS only. Reviving from the middle of an
+   * archived branch would leave a live bubble under an archived parent, the
+   * one shape the rest of the app assumes cannot happen.
+   */
+  const isArchiveRoot = useCallback((id: string) => {
+    const all = Object.fromEntries(bubbles.map(b => [b.id, b]));
+    const b = all[id];
+    if (!b || b.archivedAt === undefined) return false;
+    return !b.parentId || all[b.parentId]?.archivedAt === undefined;
+  }, [bubbles]);
+
   // ── Notes ─────────────────────────────────────────────────────────────────
   // The sheet edits a draft and calls this once, on Save. Nothing reaches the
   // canvas until then.
@@ -804,7 +854,8 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo<BubbleContextValue>(() => ({
     bubbles: stage, focusedId, editMode, editSelection, byId, cloudSaveOk,
-    completeBubble, showArchived, setShowArchived, archivedCount,
+    completeBubble, restoreBubble, isArchiveRoot,
+    showArchived, setShowArchived, archivedCount,
     canvasName, setCanvasName, saving, saveCanvas, saveError,
     hasUnsavedChanges, savedMeta, syncState,
     pendingSave, acceptPendingSave, dismissPendingSave,
@@ -815,7 +866,7 @@ export function BubbleProvider({ children }: { children: React.ReactNode }) {
     exportMap, importMap, clearCanvas,
   }), [
     stage, focusedId, editMode, editSelection, byId, cloudSaveOk,
-    completeBubble, showArchived, archivedCount,
+    completeBubble, restoreBubble, isArchiveRoot, showArchived, archivedCount,
     canvasName, saving, saveCanvas, saveError, hasUnsavedChanges, savedMeta, syncState,
     pendingSave, acceptPendingSave, dismissPendingSave,
     enterEditMode, cancelEditMode, saveEditMode,

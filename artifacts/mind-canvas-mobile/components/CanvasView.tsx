@@ -98,7 +98,7 @@ interface Props {
 
 export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble, hideText }: Props) {
   const {
-    bubbles, focusedId, editMode, editSelection, byId,
+    bubbles, focusedId, editMode, editSelection, byId, showArchived,
     setFocusedId, setEditSelection, updateBubblePosition,
     batchUpdatePositions, resyncPositions, noteInteraction,
   } = useBubbles();
@@ -924,6 +924,7 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble, hid
             isGrandchild={layer === 2}
             worldDisplaySize={worldDisplaySize}
             labelReveal={labelReveal}
+            ghosted={showArchived && b.archivedAt !== undefined}
           />
         );
       })}
@@ -954,6 +955,7 @@ export default function CanvasView({ onLongPressAddChild, onDoubleTapBubble, hid
                 isGrandchild={layer === 2}
                 worldDisplaySize={worldDisplaySize}
                 labelReveal={labelReveal}
+                ghosted={showArchived && b.archivedAt !== undefined}
               />
             );
           })}
